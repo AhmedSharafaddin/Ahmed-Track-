@@ -282,6 +282,13 @@ document.addEventListener('click', (e) => {
     case 'signout': store.signOut(); break;
     case 'export': exportData(); break;
     case 'install': env.installPrompt?.prompt(); env.installPrompt = null; break;
+    case 'check-update':
+      if (!env.swReg) { toast('التحديث التلقائي غير متاح في هذا المتصفح.'); break; }
+      toast('جارٍ البحث عن تحديث…');
+      env.swReg.update()
+        .then(() => { if (!env.swReg.installing && !env.swReg.waiting) toast('لديك أحدث إصدار.'); })
+        .catch(() => toast('تعذّر الاتصال. حاول لاحقًا.'));
+      break;
     case 'open-widget': window.open(`${location.pathname}#/widget`, 'cc-widget', 'width=380,height=560'); break;
     case 'widget-open':
       if (window.opener && !window.opener.closed) { e.preventDefault(); window.opener.focus(); }
@@ -559,6 +566,29 @@ matchMedia('(min-width: 900px)').addEventListener('change', render);
 onRoute();
 store.boot().catch((e) => { console.error(e); view.innerHTML = '<p class="loading">تعذّر تشغيل التطبيق.</p>'; });
 
+/* ═════════════ التحديث التلقائي ═════════════
+   • updateViaCache:'none' ⇒ فحص sw.js من الخادم دائمًا، لا من ذاكرة المتصفح.
+   • فحص عند الفتح، وعند العودة للتطبيق (الآيفون يُبقي التطبيق في الذاكرة ولا يعيد تحميله)، وكل ساعة.
+   • حين يتولّى إصدار جديد: إعادة تحميل مرة واحدة ⇒ تظهر النسخة الجديدة دون تدخّل. */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e));
+  const sw = navigator.serviceWorker;
+  const hadController = Boolean(sw.controller); // أول تثبيت لا يحتاج إعادة تحميل
+  let reloading = false;
+  sw.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    reloading = true;
+    location.reload();
+  });
+  sw.addEventListener('message', (e) => {
+    if (e.data?.version) { env.appVersion = e.data.version; if (ui.route === 'settings') render(); }
+  });
+  sw.register('sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      env.swReg = reg;
+      const check = () => reg.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+      setInterval(check, 60 * 60 * 1000);
+      sw.ready.then((r) => r.active?.postMessage('version'));
+    })
+    .catch((e) => console.warn('SW registration failed', e));
 }

@@ -423,6 +423,9 @@ function vSettings() {
         <button class="btn" data-act="export">تصدير</button>
         <label class="btn">استيراد<input type="file" accept="application/json,.json" data-act="import" hidden /></label>
       </div></section>
+    <section class="panel"><h2>الإصدار</h2>
+      <p class="note">الإصدار المثبّت على هذا الجهاز: <b dir="ltr">${esc(env.appVersion || '—')}</b>. التحديثات تصل تلقائيًا عند فتح التطبيق مع اتصال.</p>
+      <div class="row" style="margin-top:10px"><button class="btn" data-act="check-update">البحث عن تحديث الآن</button></div></section>
   </div>`;
 }
 
