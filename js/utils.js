@@ -61,3 +61,50 @@ export const QUADRANTS = {
 export const QUADRANT_ORDER = ['q1', 'q2', 'q3', 'q4'];
 
 export const AREA_COLORS = ['#2f7d6d', '#b5832a', '#5b6bbf', '#a24d6b', '#3f8fb0', '#7a6a55'];
+
+/* ───────── إضافات الإصدار ٢ ───────── */
+export const keyAdd = (k, days) => dateKey(addDays(parseKey(k), days));
+export const daysBetween = (a, b) => Math.round((parseKey(b) - parseKey(a)) / 864e5);
+
+/** التكرار (مثل Microsoft To Do): عند إنجاز مهمة متكررة تُنشأ النسخة التالية. */
+export const REPEATS = {
+  daily: 'يوميًا',
+  workdays: 'أيام العمل (عدا الجمعة)',
+  weekly: 'أسبوعيًا',
+  monthly: 'شهريًا',
+};
+
+export function nextOccurrence(fromKey, repeat) {
+  const d = parseKey(fromKey);
+  if (repeat === 'daily') return keyAdd(fromKey, 1);
+  if (repeat === 'weekly') return keyAdd(fromKey, 7);
+  if (repeat === 'workdays') {
+    let x = addDays(d, 1);
+    while (x.getDay() === 5) x = addDays(x, 1); // الجمعة
+    return dateKey(x);
+  }
+  if (repeat === 'monthly') {
+    const last = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate();
+    return dateKey(new Date(d.getFullYear(), d.getMonth() + 1, Math.min(d.getDate(), last)));
+  }
+  return null;
+}
+
+/** وصف نسبي للتاريخ: اليوم، غدًا، أمس، وإلا التاريخ المختصر. */
+export function relDay(k) {
+  const diff = daysBetween(todayKey(), k);
+  if (diff === 0) return 'اليوم';
+  if (diff === 1) return 'غدًا';
+  if (diff === -1) return 'أمس';
+  return fmtDate(k);
+}
+
+export const initials = (name = '') =>
+  name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('') || '؟';
+
+/** لون ثابت لكل شخص مُسند إليه (من اسمه). */
+export function personColor(name = '') {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return `hsl(${h} 45% 45%)`;
+}

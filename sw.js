@@ -4,10 +4,10 @@
 // • غير ذلك (طلبات Firestore/المصادقة): يمر للشبكة كما هو.
 // عند تغيير ملفات التطبيق جوهريًا: ارفع رقم VERSION.
 
-const VERSION = 'cc-v1';
+const VERSION = 'cc-v2';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
-  './js/app.js', './js/store.js', './js/utils.js', './js/config.js',
+  './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/apple-touch-icon.png',
 ];
 
