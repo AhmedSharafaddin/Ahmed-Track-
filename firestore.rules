@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// كل مستخدم يقرأ ويكتب بياناته فقط: users/{uid}/{areas|goals|tasks|reviews}/{id}
+// أي مسار آخر مرفوض افتراضيًا.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{collection}/{docId} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == userId
+        && collection in ['areas', 'goals', 'tasks', 'reviews'];
+    }
+  }
+}
