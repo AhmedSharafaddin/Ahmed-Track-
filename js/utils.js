@@ -3,6 +3,9 @@
 export const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 
+// أرقام لاتينية صريحة: نفس الشكل على ويندوز (Chrome/Edge) والآيفون (Safari)
+const LOCALE = 'ar-u-nu-latn';
+
 const pad = (n) => String(n).padStart(2, '0');
 
 /** مفتاح تاريخ محلي بصيغة YYYY-MM-DD (بتوقيت الجهاز، لا UTC). */
@@ -30,10 +33,10 @@ export const weekKey = (d = new Date()) => dateKey(weekStart(d));
 
 export const todayKey = () => dateKey();
 
-const fmtShort = new Intl.DateTimeFormat('ar', { weekday: 'short', day: 'numeric', month: 'short' });
-const fmtLong = new Intl.DateTimeFormat('ar', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-const fmtDay = new Intl.DateTimeFormat('ar', { day: 'numeric', month: 'short' });
-const fmtNum = new Intl.NumberFormat('ar');
+const fmtShort = new Intl.DateTimeFormat(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtLong = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const fmtDay = new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'short' });
+const fmtNum = new Intl.NumberFormat(LOCALE);
 
 export const fmtDate = (key) => (key ? fmtShort.format(parseKey(key)) : '');
 export const fmtLongDate = (d = new Date()) => fmtLong.format(d);

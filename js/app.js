@@ -253,7 +253,7 @@ function renderGoals() {
         <button class="btn sm" data-act="edit-goal" data-id="${g.id}">تعديل</button></div>
       <div class="meta" style="margin-top:4px">${areaChip(g.areaId)}${g.targetDate ? `<span class="${g.status !== 'done' && g.targetDate < todayKey() ? 'late' : ''}">الموعد: ${fmtDate(g.targetDate)}</span>` : ''}</div>
       ${g.why ? `<p class="why">${esc(g.why)}</p>` : '<div style="height:10px"></div>'}
-      <div class="progress"><div class="bar"><i style="width:${p.pct}%"></i></div><span>${n(p.pct)}٪ · ${n(p.done)}/${n(p.total)}</span></div>
+      <div class="progress"><div class="bar"><i style="width:${p.pct}%"></i></div><span>${n(p.pct)}% · ${n(p.done)}/${n(p.total)}</span></div>
       ${taskList(open, { focusBtn: true, focusFull: focusToday().length >= MAX_FOCUS })}
       ${g.status !== 'done' ? `<div class="row" style="margin-top:10px"><button class="btn sm" data-act="new-task" data-goal="${g.id}" data-area="${g.areaId || ''}">＋ خطوة لهذا الهدف</button></div>` : ''}
       ${p.total === 0 && g.status !== 'done' ? '<p class="note">الهدف بلا مهام لا يتقدّم. قسّمه إلى خطوات صغيرة.</p>' : ''}
@@ -295,7 +295,7 @@ function renderReview() {
   </div>
   <div class="stats">
     <div class="card stat"><b>${n(done.length)}</b><span>مهمة منجزة</span></div>
-    <div class="card stat"><b>${n(done.length ? Math.round((q2 / done.length) * 100) : 0)}٪</b><span>من المنجز عمل استراتيجي («خطّط لها»)</span></div>
+    <div class="card stat"><b>${n(done.length ? Math.round((q2 / done.length) * 100) : 0)}%</b><span>من المنجز عمل استراتيجي («خطّط لها»)</span></div>
     <div class="card stat"><b>${n(overdue.length)}</b><span>متأخرة الآن</span></div>
     <div class="card stat"><b>${n(slipped.length)}</b><span>مهام تتكرر في الترحيل</span></div>
   </div>
