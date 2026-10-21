@@ -7,7 +7,14 @@
 // ملاحظة أمنية: هذه القيم ليست أسرارًا (تظهر لأي متصفح يفتح التطبيق).
 // الحماية الفعلية تأتي من قواعد Firestore (firestore.rules) وتسجيل الدخول.
 
-export const firebaseConfig = null;
+export const firebaseConfig = {
+  apiKey: 'AIzaSyCpTlAtL7Rkfj5sRh-cWXVcdgdx4ZVaWec',
+  authDomain: 'track-b87ef.firebaseapp.com',
+  projectId: 'track-b87ef',
+  storageBucket: 'track-b87ef.firebasestorage.app',
+  messagingSenderId: '873398442659',
+  appId: '1:873398442659:web:9eef72f6dd453d23e5fd16',
+};
 
 /* مثال على الشكل المطلوب:
 export const firebaseConfig = {
