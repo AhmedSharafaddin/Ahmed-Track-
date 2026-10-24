@@ -56,6 +56,9 @@ export function openDatePicker(opts) {
     const start = addDays(first, -lead);
     const t0 = todayKey();
     const cells = [];
+    // يوم واحد قابل للوصول بـTab: المختار إن كان في هذا الشهر، وإلا اليوم، وإلا أول الشهر
+    const inMonth = (k) => k && parseKey(k).getMonth() === st.month.getMonth() && parseKey(k).getFullYear() === st.month.getFullYear();
+    const tabKey = inMonth(st.v.date) ? st.v.date : inMonth(t0) ? t0 : dateKey(first);
     for (let i = 0; i < 42; i++) {
       const day = addDays(start, i);
       const k = dateKey(day);
@@ -67,7 +70,7 @@ export function openDatePicker(opts) {
         const lvl = Math.min(3, ld.count >= 6 ? 3 : ld.count >= 3 ? 2 : 1);
         load = `<i class="ld l${lvl}${over ? ' over' : ''}" title="${ld.count} مهمة"></i>`;
       }
-      cells.push(`<button type="button" class="pk-d${out ? ' out' : ''}${k === t0 ? ' now' : ''}${k === st.v.date ? ' sel' : ''}${k < t0 ? ' past' : ''}" data-d="${k}" role="gridcell" aria-selected="${k === st.v.date}" aria-label="${LONG.format(day)}${ld?.count ? `، ${ld.count} مهمة` : ''}" tabindex="${k === (st.v.date || t0) ? 0 : -1}"><span>${day.getDate()}</span>${load}</button>`);
+      cells.push(`<button type="button" class="pk-d${out ? ' out' : ''}${k === t0 ? ' now' : ''}${k === st.v.date ? ' sel' : ''}${k < t0 ? ' past' : ''}" data-d="${k}" role="gridcell" aria-selected="${k === st.v.date}" aria-label="${LONG.format(day)}${ld?.count ? `، ${ld.count} مهمة` : ''}" tabindex="${k === tabKey ? 0 : -1}"><span>${day.getDate()}</span>${load}</button>`);
     }
     return cells.join('');
   }
@@ -79,7 +82,7 @@ export function openDatePicker(opts) {
     const quick = [['اليوم', t0, 'sun'], ['غدًا', keyAdd(t0, 1), 'sun'], [WEEKDAY.format(parseKey(after)), after, 'cal'], ['السبت القادم', sat, 'cal'], ['بعد أسبوع', keyAdd(t0, 7), 'cal']]
       .filter((x, i, a) => a.findIndex((y) => y[1] === x[1]) === i);
     const timeChips = [['', 'بلا وقت'], ...TIMES.map((t) => [t, fmtTime(t)])]
-      .map(([t, l]) => `<button type="button" class="chip-b${!st.custom && (st.v.time || '') === t ? ' on' : ''}" data-time="${t}">${l}</button>`).join('');
+      .map(([t, l]) => `<button type="button" class="chip-b${!st.custom && (st.v.time || '') === t ? ' on' : ''}" aria-pressed="${!st.custom && (st.v.time || '') === t}" data-time="${t}">${l}</button>`).join('');
     const [hh, mm] = (st.v.time || '09:00').split(':').map(Number);
     const pm = hh >= 12;
     const h12 = hh % 12 || 12;
@@ -113,7 +116,7 @@ export function openDatePicker(opts) {
       </section>
       <section class="pk-sec">
         <p class="pk-l">${ic('bell')}ذكّرني</p>
-        <div class="chips"><button type="button" class="chip-b${st.v.remind == null ? ' on' : ''}" data-rem="">بلا تذكير</button>${Object.entries(REMINDS).map(([k, l]) => `<button type="button" class="chip-b${String(st.v.remind) === k ? ' on' : ''}" data-rem="${k}">${l}</button>`).join('')}</div>
+        <div class="chips"><button type="button" class="chip-b${st.v.remind == null ? ' on' : ''}" data-rem="">بلا تذكير</button>${Object.entries(REMINDS).map(([k, l]) => `<button type="button" class="chip-b${String(st.v.remind) === k ? ' on' : ''}" aria-pressed="${String(st.v.remind) === k}" data-rem="${k}">${l}</button>`).join('')}</div>
         ${st.v.remind != null ? `<label class="pk-intent"><span>${ic('hand')}متى وأين ستبدأ بالضبط؟ <em>تقرؤها في التنبيه</em></span>
           <input id="pk-intent" maxlength="140" value="${esc(st.v.intent || '')}" placeholder="مثال: بعد اجتماع الصباح، على مكتبي، أفتح ملف الرواتب" /></label>` : ''}
       </section>` : ''}
@@ -137,6 +140,8 @@ export function openDatePicker(opts) {
   d.onclick = (e) => {
     const b = e.target.closest('button');
     if (!b || !d.contains(b)) return;
+    // ما كُتب في «متى وأين ستبدأ» يُحفظ قبل أي إعادة رسم
+    st.v.intent = d.querySelector('#pk-intent')?.value ?? st.v.intent;
     const ds = b.dataset;
     const cur = st.v.time ? st.v.time.split(':').map(Number) : [9, 0];
     if (ds.pk === 'close') { d.close(); return; }
@@ -146,9 +151,16 @@ export function openDatePicker(opts) {
     if (ds.pk === 'custom') { st.custom = true; if (!st.v.time) setTime(9, 0); render('.pk-hours .on'); return; }
     if (ds.d) { setDate(ds.d); render(`.pk-grid [data-d="${ds.d}"]`); return; }
     if ('time' in ds) { st.custom = false; st.v.time = ds.time || null; if (st.v.time && !st.v.date) setDate(todayKey()); render(`[data-time="${ds.time}"]`); return; }
-    if (ds.h) { const pm = cur[0] >= 12; let h = Number(ds.h) % 12; if (pm) h += 12; setTime(h, cur[1]); render(`[data-h="${ds.h}"]`); return; }
+    if (ds.h) {
+      // يوم العمل: ١٢ و١–٦ مساءً، و٧–١١ صباحًا — ما لم يحدّد المستخدم ص/م بنفسه
+      const hv = Number(ds.h);
+      const pm = st.apLocked ? cur[0] >= 12 : hv === 12 || hv <= 6;
+      setTime((hv % 12) + (pm ? 12 : 0), cur[1]);
+      render(`[data-h="${ds.h}"]`);
+      return;
+    }
     if (ds.m) { setTime(cur[0], Number(ds.m)); render(`[data-m="${ds.m}"]`); return; }
-    if (ds.ap) { let h = cur[0] % 12; if (ds.ap === 'pm') h += 12; setTime(h, cur[1]); render(`[data-ap="${ds.ap}"]`); return; }
+    if (ds.ap) { st.apLocked = true; let h = cur[0] % 12; if (ds.ap === 'pm') h += 12; setTime(h, cur[1]); render(`[data-ap="${ds.ap}"]`); return; }
     if ('rem' in ds) {
       st.v.intent = d.querySelector('#pk-intent')?.value ?? st.v.intent;
       st.v.remind = ds.rem === '' ? null : ds.rem === 'morning' ? 'morning' : Number(ds.rem);
@@ -161,6 +173,7 @@ export function openDatePicker(opts) {
   d.onkeydown = (e) => {
     const cell = e.target.closest?.('.pk-d');
     if (!cell) return;
+    st.v.intent = d.querySelector('#pk-intent')?.value ?? st.v.intent;
     const step = { ArrowLeft: 1, ArrowRight: -1, ArrowDown: 7, ArrowUp: -7 }[e.key];
     if (step) { e.preventDefault(); const k = keyAdd(cell.dataset.d, step); setDate(k); render(`.pk-grid [data-d="${k}"]`); }
     if (e.key === 'Enter') { e.preventDefault(); setDate(cell.dataset.d); save(); }

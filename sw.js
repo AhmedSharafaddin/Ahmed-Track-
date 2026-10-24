@@ -10,7 +10,7 @@
 //
 // ⚠️ عند أي تعديل على ملفات التطبيق: ارفع رقم VERSION — وإلا لن يصل التعديل للأجهزة المثبّت عليها.
 
-const VERSION = 'cc-v4';
+const VERSION = 'cc-v5';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
@@ -100,7 +100,9 @@ self.addEventListener('notificationclick', (e) => {
   const target = new URL(`./${hash}`, self.registration.scope).href;
   e.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const win = all.find((c) => c.url.startsWith(self.registration.scope)) || all[0];
+    // نفضّل نافذة التطبيق الكاملة على نافذة الـWidget الصغيرة
+    const app = all.filter((c) => c.url.startsWith(self.registration.scope) && !c.url.includes('#/widget'));
+    const win = app.find((c) => c.focused) || app.find((c) => c.visibilityState === 'visible') || app[0];
     if (win) {
       win.postMessage({ type: 'nav', hash });
       return win.focus();

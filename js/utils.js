@@ -38,7 +38,8 @@ const fmtLong = new Intl.DateTimeFormat(LOCALE, { weekday: 'long', day: 'numeric
 const fmtDay = new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'short' });
 const fmtNum = new Intl.NumberFormat(LOCALE);
 
-export const fmtDate = (key) => (key ? fmtShort.format(parseKey(key)) : '');
+/** آمنة مع التواريخ التالفة (بيانات مستوردة): تُرجع نصًا فارغًا بدل إيقاف العرض. */
+export const fmtDate = (key) => { if (!key) return ''; try { return fmtShort.format(parseKey(key)); } catch { return ''; } };
 export const fmtLongDate = (d = new Date()) => fmtLong.format(d);
 export const fmtDayMonth = (d) => fmtDay.format(d);
 export const n = (x) => fmtNum.format(x);
@@ -75,7 +76,8 @@ export const REPEATS = {
   monthly: 'شهريًا',
 };
 
-export function nextOccurrence(fromKey, repeat) {
+/** anchorDay: يوم الشهر الأصلي للتكرار الشهري (31 يبقى 31 بعد فبراير، لا ينزلق إلى 28). */
+export function nextOccurrence(fromKey, repeat, anchorDay) {
   const d = parseKey(fromKey);
   if (repeat === 'daily') return keyAdd(fromKey, 1);
   if (repeat === 'weekly') return keyAdd(fromKey, 7);
@@ -86,7 +88,7 @@ export function nextOccurrence(fromKey, repeat) {
   }
   if (repeat === 'monthly') {
     const last = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate();
-    return dateKey(new Date(d.getFullYear(), d.getMonth() + 1, Math.min(d.getDate(), last)));
+    return dateKey(new Date(d.getFullYear(), d.getMonth() + 1, Math.min(anchorDay || d.getDate(), last)));
   }
   return null;
 }
@@ -135,3 +137,6 @@ export const EMOJIS = [
   '🛋️', '🪑', '🏠', '🏗️', '🎨', '📸', '📝', '📚', '🎓', '✍️', '🗂️', '📅',
   '🌱', '💪', '🏃', '🕌', '❤️', '👨‍👩‍👧', '✈️', '☕', '🎧', '💡', '🧭', '🕊️',
 ];
+
+/** تاريخ صحيح بصيغة YYYY-MM-DD (يرفض 2026-02-30 والنصوص التالفة). */
+export const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k) && dateKey(parseKey(k)) === k;

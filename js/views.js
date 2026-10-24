@@ -97,17 +97,21 @@ const goalOptions = (sel) =>
   S().goals.filter((g) => g.status !== 'done' || g.id === sel)
     .map((g) => `<option value="${g.id}"${g.id === sel ? ' selected' : ''}>${g.emoji ? `${esc(g.emoji)} ` : ''}${esc(g.title)}</option>`).join('');
 
-/** الإضافة السريعة — حقل واحد، والرموز ! @ # تغني عن النماذج. */
-export function quickAdd(ctx = {}, placeholder = 'أضف مهمة') {
+/** الإضافة السريعة — حقل واحد، والرموز ! @ # تغني عن النماذج.
+ *  id: معرّف الحقل ('qa' في الصفحة، 'qa-d' في نافذة الإضافة) — والمسودة والموعد المختار
+ *  محفوظان في ui.drafts فلا يضيعان إن أُعيد رسم الشاشة بسبب مزامنة. */
+export function quickAdd(ctx = {}, placeholder = 'أضف مهمة', id = 'qa') {
   const attrs = Object.entries(ctx).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ');
-  return `<form class="qa" data-form="quick" ${attrs} autocomplete="off">
+  const d = ui.drafts[`${id}:date`] || {};
+  const label = d.date ? `${relDay(d.date)}${d.time ? ` ${fmtTime(d.time)}` : ''}${d.remind != null ? ' 🔔' : ''}` : 'موعد';
+  return `<form class="qa" data-form="quick" data-qid="${id}" ${attrs} autocomplete="off">
     <span class="qa-plus">${I('plus')}</span>
-    <input id="qa" name="title" class="qa-in" data-draft="qa" value="${esc(ui.drafts.qa || '')}" placeholder="${placeholder}" maxlength="200" aria-label="${placeholder}" enterkeyhint="done" />
-    <input type="hidden" name="due" /><input type="hidden" name="time" /><input type="hidden" name="remind" /><input type="hidden" name="intent" />
+    <input id="${id}" name="title" class="qa-in" data-draft="${id}" value="${esc(ui.drafts[id] || '')}" placeholder="${placeholder}" maxlength="200" aria-label="${placeholder}" enterkeyhint="done" />
+    <input type="hidden" name="due" value="${esc(d.date || '')}" /><input type="hidden" name="time" value="${esc(d.time || '')}" /><input type="hidden" name="remind" value="${esc(d.remind ?? '')}" /><input type="hidden" name="intent" value="${esc(d.intent || '')}" />
     <div class="qa-more">
       <label class="chip-t"><input type="checkbox" name="important" /> مهم</label>
       <label class="chip-t"><input type="checkbox" name="urgent" /> عاجل</label>
-      <button type="button" class="chip-t qa-date" data-act="qa-date">${I('cal')}<span>موعد</span></button>
+      <button type="button" class="chip-t qa-date${d.date ? ' on' : ''}" data-act="qa-date" aria-pressed="${!!d.date}">${I('cal')}<span>${esc(label)}</span></button>
       <span class="qa-tokens" aria-live="polite"></span>
       <span class="qa-hint">اكتب <b>@الاسم</b> للإسناد، <b>#المجال</b> للتصنيف، <b>!</b> مهم، <b>!!</b> عاجل ومهم</span>
     </div>
@@ -385,7 +389,7 @@ function notifyPanel() {
   return `<section class="panel" id="notify"><h2>${I('bell', 'd')}التنبيهات</h2>${state}
     <div class="srow"><span>${I('sun', 'd')}خطة الصباح</span><select class="in sm" data-set="morning" aria-label="وقت خطة الصباح">${timeOpts(s.morning, 5, 11)}</select></div>
     <div class="srow"><span>${I('moon', 'd')}إغلاق اليوم</span><select class="in sm" data-set="evening" aria-label="وقت إغلاق اليوم">${timeOpts(s.evening, 14, 23)}</select></div>
-    <div class="srow"><span>${I('scales', 'd')}ساعات التركيز المتاحة يوميًا</span><div class="seg">${[4, 5, 6, 7, 8].map((h) => `<button class="${Number(s.capacity) === h ? 'on' : ''}" data-act="set-capacity" data-v="${h}">${h}</button>`).join('')}</div></div>
+    <div class="srow"><span>${I('scales', 'd')}ساعات التركيز المتاحة يوميًا</span><div class="seg">${[4, 5, 6, 7, 8].map((h) => `<button class="${Number(s.capacity) === h ? 'on' : ''}" aria-pressed="${Number(s.capacity) === h}" data-act="set-capacity" data-v="${h}">${h}</button>`).join('')}</div></div>
     <p class="note">كل مهمة لها تذكير تصلك مرتين: في موعدها، ثم بعد نصف ساعة إن لم تُنجز. وكل تأجيل يُحسب ويظهر لك.</p>
   </section>`;
 }
@@ -525,7 +529,7 @@ export function pane(t) {
     <div class="pblk">
       <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : t.due ? '<small>بلا تذكير</small>' : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
       <div class="prow static">${I('hourglass', 'd')}<span>الوقت المتوقع</span>
-        <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
+        <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" aria-pressed="${t.est === m}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
       <div class="prow static">${I('repeat')}<span>التكرار</span><select class="in sm" data-f="repeat" aria-label="التكرار"><option value="">لا يتكرر</option>${Object.entries(REPEATS).map(([k, v]) => `<option value="${k}"${t.repeat === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="prow static">${I('grid', 'd')}<span>التصنيف</span>
         <label class="chip-t"><input type="checkbox" data-f="important" ${t.important ? 'checked' : ''} /> مهم</label>
@@ -584,7 +588,7 @@ export function focusView(t) {
     <div class="fx-clock"><svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="92" class="trk"/><circle cx="100" cy="100" r="92" class="arc" id="fx-arc" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - pct)).toFixed(1)}"/></svg>
       <b id="fx-time">${fmtClock(T.left)}</b></div>
     <div class="fx-ctl">
-      ${[15, 25, 50].map((m) => `<button class="chip-b${T.total === m * 60 ? ' on' : ''}" data-act="fx-len" data-m="${m}">${n(m)} د</button>`).join('')}
+      ${[15, 25, 50].map((m) => `<button class="chip-b${T.total === m * 60 ? ' on' : ''}" aria-pressed="${T.total === m * 60}" data-act="fx-len" data-m="${m}">${n(m)} د</button>`).join('')}
       <button class="btn primary fx-go" data-act="fx-toggle">${T.running ? `${I('pause')}إيقاف مؤقت` : `${I('play', 'f')}${T.left < T.total ? 'استئناف' : 'ابدأ'}`}</button>
     </div>
     ${steps.length ? `<ul class="fx-steps">${steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><button class="ck sm" data-act="step-toggle" data-i="${i}" data-id="${t.id}">${I('check')}</button><span>${esc(s.title)}</span></li>`).join('')}</ul>` : ''}

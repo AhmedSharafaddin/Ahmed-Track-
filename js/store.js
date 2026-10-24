@@ -105,12 +105,14 @@ class SnapshotAdapter {
   _queue(op) {
     const q = readJSON(LS_QUEUE + this.uid) || [];
     q.push(op);
-    writeJSON(LS_QUEUE + this.uid, q);
+    if (!writeJSON(LS_QUEUE + this.uid, q)) console.error('queue write failed — edit kept on screen only', op);
   }
 
-  put(coll, item) {
+  // نحفظ الحقول التي تغيّرت فقط (patch) لا المستند كاملًا: إن عدّل جهاز آخر حقولًا أخرى
+  // في الأثناء فلن تُمحى عند الإرسال، لأن الدمج يتم على مستوى الحقل.
+  put(coll, item, patch) {
     this.state = { ...this.state, [coll]: upsert(this.state[coll], item) };
-    this._queue({ op: 'put', coll, item });
+    this._queue(patch ? { op: 'patch', coll, id: item.id, data: patch } : { op: 'put', coll, id: item.id, data: item });
     this.save();
     this.onChange(this.state, { ready: true, serverConfirmed: false, pending: true, booting: true }, true);
   }
@@ -181,6 +183,8 @@ class CloudAdapter {
         const m = this.maps[c];
         let changed = false;
         if (!loaded.has(c)) {
+          // نسخة Firestore المحلية فارغة (مُسحت أو جهاز جديد) ونحن نعرض بيانات محفوظة ⇒ ننتظر الخادم
+          if (snap.metadata.fromCache && !snap.docs.length && m.size) return;
           m.clear();
           snap.docs.forEach((d) => m.set(d.id, d.data()));
           loaded.add(c);
@@ -196,7 +200,7 @@ class CloudAdapter {
         if (snap.metadata.hasPendingWrites) pending.add(c); else pending.delete(c);
         if (changed) this.state = { ...this.state, [c]: [...m.values()] };
         onChange(this.state, status(), changed);
-        if (changed) this.saveSnap();
+        if (changed && fromServer.size === COLLS.length) this.saveSnap();
       }, (err) => {
         console.error('snapshot error', err);
         onChange(this.state, { ...status(), error: err }, false);
@@ -214,12 +218,22 @@ class CloudAdapter {
 
   ref(coll, id) { return this.fs.doc(this.db, 'users', this.uid, coll, id); }
 
-  // تحديث فوري في الواجهة، ثم إرسال للسحابة (يعمل دون اتصال ويُرسل عند عودته)
-  put(coll, item) {
+  // تحديث فوري في الواجهة، ثم إرسال للسحابة (يعمل دون اتصال ويُرسل عند عودته).
+  // التعديل يُرسل كحقول متغيّرة مدموجة (merge) ⇒ تعديلان من جهازين على حقول مختلفة لا يمحو أحدهما الآخر.
+  put(coll, item, patch) {
     this.maps[coll].set(item.id, item);
     this.state = { ...this.state, [coll]: [...this.maps[coll].values()] };
     this.onChange(this.state, { ...this.status(), pending: true }, true);
-    this.fs.setDoc(this.ref(coll, item.id), clean(item)).catch((e) => console.error('put failed', e));
+    const w = patch
+      ? this.fs.setDoc(this.ref(coll, item.id), clean(patch), { merge: true })
+      : this.fs.setDoc(this.ref(coll, item.id), clean(item));
+    w.catch((e) => console.error('put failed', e));
+  }
+
+  /** تطبيق تعديل من الطابور على أحدث نسخة معروفة من الخادم (لا على النسخة القديمة). */
+  applyPatch(coll, id, patch) {
+    const cur = this.maps[coll].get(id);
+    this.put(coll, { ...(cur || {}), ...patch, id }, cur ? patch : null);
   }
 
   remove(coll, id) {
@@ -254,7 +268,7 @@ export const store = {
     const cb = (state, status, dataChanged = true) => {
       if (this.adapter !== adapter) return; // محرّك قديم
       this.state = state;
-      this.status = status;
+      this.status = this.offline ? { ...status, offline: true } : status;
       if (dataChanged) this.rev++;
       if (adapter.kind === 'cloud' && status.serverConfirmed) this._afterCloudLoad();
       this.emit(dataChanged);
@@ -283,14 +297,23 @@ export const store = {
 
     // ٢) Firebase بعد أول رسم
     await afterPaint();
+    await this._startCloud();
+  },
+
+  async _startCloud() {
     try {
-      this.cloud = new CloudAdapter();
-      await this.cloud.init();
+      const cloud = new CloudAdapter();
+      await cloud.init();
+      this.cloud = cloud;
+      this.offline = false;
     } catch (e) {
       console.error('cloud init failed', e);
       if (this.mode !== 'cloud') this.mode = 'cloud-error';
+      this.offline = true;
       this.status = { ...this.status, offline: true };
       this.emit(false);
+      // نعيد المحاولة تلقائيًا حين يعود الاتصال، دون إعادة فتح التطبيق
+      window.addEventListener('online', () => this._startCloud(), { once: true });
       return;
     }
     this.cloud.onAuth((user) => {
@@ -304,7 +327,12 @@ export const store = {
         this._attach(this.cloud, user.uid, seed);
         this._flushQueue(user.uid);
       } else {
-        try { localStorage.removeItem(LS_LAST); } catch {}
+        // انتهت الجلسة أو سجّل الخروج: لا نُبقي بيانات الحساب ولا تعديلاته المعلّقة على الجهاز
+        const prev = readJSON(LS_LAST);
+        try {
+          localStorage.removeItem(LS_LAST);
+          if (prev?.uid) { localStorage.removeItem(LS_SNAP + prev.uid); localStorage.removeItem(LS_QUEUE + prev.uid); }
+        } catch {}
         this.user = null;
         this.mode = 'cloud-signed-out';
         this._attach(this.local);
@@ -317,7 +345,8 @@ export const store = {
     const q = readJSON(LS_QUEUE + uid);
     if (!q?.length) return;
     for (const op of q) {
-      if (op.op === 'put') this.cloud.put(op.coll, op.item);
+      if (op.op === 'patch') this.cloud.applyPatch(op.coll, op.id, op.data);
+      else if (op.op === 'put') this.cloud.put(op.coll, op.data || op.item);
       else this.cloud.remove(op.coll, op.id);
     }
     try { localStorage.removeItem(LS_QUEUE + uid); } catch {}
@@ -331,9 +360,12 @@ export const store = {
     if (!localStorage.getItem(key)) {
       const local = this.local.read();
       if (local) {
+        const seedIds = new Set(SEED_AREAS.map((a) => a.id));
         for (const c of COLLS) {
           const remote = new Map(this.state[c].map((x) => [x.id, x]));
           for (const item of local[c] || []) {
+            // المجالات الافتراضية المحلية لا تعلو على مجالات الحساب (قد يكون المستخدم عدّلها أو حذفها)
+            if (c === 'areas' && seedIds.has(item.id) && this.state.areas.length) continue;
             const r = remote.get(item.id);
             if (!r || (item.updatedAt || '') > (r.updatedAt || '')) this.cloud.put(c, item);
           }
@@ -347,9 +379,26 @@ export const store = {
   },
 
   put(coll, item) {
-    const stamped = { ...item, updatedAt: now(), createdAt: item.createdAt || now() };
-    this.adapter.put(coll, stamped);
+    const prev = this.state[coll].find((x) => x.id === item.id);
+    const stamped = { ...item, updatedAt: now(), createdAt: item.createdAt || prev?.createdAt || now() };
+    let patch = null;
+    if (prev) {
+      patch = { id: item.id };
+      for (const k of new Set([...Object.keys(stamped), ...Object.keys(prev)])) {
+        if (JSON.stringify(stamped[k]) !== JSON.stringify(prev[k])) patch[k] = stamped[k] === undefined ? null : stamped[k];
+      }
+    }
+    this.adapter.put(coll, stamped, patch);
     return stamped;
+  },
+
+  /** مسح بيانات الحساب من هذا الجهاز (عند تسجيل الخروج). */
+  forgetDevice() {
+    const uid = this.user?.uid;
+    try {
+      localStorage.removeItem(LS_LAST);
+      if (uid) { localStorage.removeItem(LS_SNAP + uid); localStorage.removeItem(LS_QUEUE + uid); }
+    } catch {}
   },
 
   remove(coll, id) { this.adapter.remove(coll, id); },

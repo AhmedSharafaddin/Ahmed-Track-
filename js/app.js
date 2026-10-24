@@ -3,7 +3,7 @@
 // ومكوّنات الاختيار في picker.js، والتنبيهات في notify.js.
 
 import { store } from './store.js';
-import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay } from './utils.js';
+import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay, isDateKey } from './utils.js';
 import {
   S, areas, areaById, goalById, taskById, isOpen, createTask, updateTask, toggleTask, focusPatch, FULL_MSG,
   rollover, followedUp, parseQuick, convertSetupFile, settings, saveSettings, snooze, dayLoads,
@@ -26,7 +26,7 @@ let lastDay = todayKey();
    • تغيّر حالة المزامنة فقط لا يعيد رسم الشاشة. */
 let scheduled = false;
 let forcePane = false;
-const last = { view: '', nav: '', pane: '', route: '' };
+const last = { view: '', nav: '', pane: '', route: '', fx: '' };
 
 function focusKey(el) {
   if (!el || el === document.body) return null;
@@ -84,15 +84,23 @@ function paint() {
   if (ui.focusId && !ft) ui.focusId = null;
   if (ft) {
     const fh = focusView(ft);
-    if (fx.dataset.h !== fh) { fx.innerHTML = fh; fx.dataset.h = fh; }
+    const opening = fx.hidden;
+    if (last.fx !== fh) { fx.innerHTML = fh; last.fx = fh; }
     fx.hidden = false;
-  } else if (!fx.hidden) { fx.hidden = true; fx.innerHTML = ''; fx.dataset.h = ''; }
+    setInert(true);
+    if (opening) setTimeout(() => $('.fx-go', fx)?.focus(), 30);
+  } else if (!fx.hidden) { fx.hidden = true; fx.innerHTML = ''; last.fx = ''; setInert(false); }
 
   renderSync();
   if (key) {
     const el = $(key);
     if (el && el !== document.activeElement) { el.focus({ preventScroll: true }); if (sel) try { el.setSelectionRange(...sel); } catch {} }
   }
+}
+
+/** وضع التركيز نافذة كاملة: ما خلفه لا يُركَّز عليه بلوحة المفاتيح ولا يقرؤه قارئ الشاشة. */
+function setInert(on) {
+  for (const sel of ['.shell', '.tabbar', '.fab']) { const el = $(sel); if (el) el.inert = on; }
 }
 
 function autosize(el) {
@@ -169,9 +177,11 @@ function handlePendingTask() {
 /* ═════════════ الحوارات ═════════════ */
 function openCapture(ctx = {}, title = 'مهمة جديدة') {
   dlg.classList.remove('commit-dlg');
-  dlg.innerHTML = `<div class="cap"><div class="cap-h"><h2>${title}</h2><button class="ib" data-act="close" aria-label="إغلاق">${I('x')}</button></div>${quickAdd({ ...ctx, dialog: '1' }, 'ماذا تريد أن تنجز؟')}</div>`;
+  delete ui.drafts['qa-d'];
+  delete ui.drafts['qa-d:date'];
+  dlg.innerHTML = `<div class="cap"><div class="cap-h"><h2>${esc(title)}</h2><button class="ib" data-act="close" aria-label="إغلاق">${I('x')}</button></div>${quickAdd({ ...ctx, dialog: '1' }, 'ماذا تريد أن تنجز؟', 'qa-d')}</div>`;
   dlg.showModal();
-  setTimeout(() => $('#qa', dlg)?.focus(), 30);
+  setTimeout(() => $('#qa-d', dlg)?.focus(), 30);
 }
 
 function openGoalDialog(g = {}) {
@@ -229,7 +239,7 @@ function tick() {
     document.title = 'مركز القيادة';
     chime();
     toast('انتهت الجلسة. خذ خمس دقائق استراحة ثم عد.');
-    fx.dataset.h = '';
+    last.fx = '';
     render();
   }
 }
@@ -273,6 +283,7 @@ function done(id) {
 
 /** تعبئة حقول الموعد المخفية في نموذج الإضافة السريعة، وعرضها على الزر. */
 function setQuickDate(form, v) {
+  ui.drafts[`${form.dataset.qid}:date`] = v.date ? v : null;
   const vals = { due: v.date, time: v.time, remind: v.remind, intent: v.intent };
   for (const k of Object.keys(vals)) form.elements[k].value = vals[k] ?? '';
   const btn = form.querySelector('.qa-date');
@@ -316,12 +327,16 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'qa-date': {
-      const form = el.closest('form');
-      const f = form.elements;
+      const qid = el.closest('form').dataset.qid;
+      const f = el.closest('form').elements;
       openDatePicker({
         ...pickerBase(), title: 'موعد المهمة الجديدة',
         value: { date: f.due.value || null, time: f.time.value || null, remind: f.remind.value === '' ? null : f.remind.value === 'morning' ? 'morning' : Number(f.remind.value), intent: f.intent.value },
-        onSave: (v) => { setQuickDate(form, v); form.querySelector('#qa')?.focus(); },
+        // النموذج قد يُعاد رسمه أثناء فتح المنتقي (مزامنة) ⇒ نبحث عن النسخة الحالية منه
+        onSave: (v) => {
+          const input = document.getElementById(qid);
+          if (input) { setQuickDate(input.closest('form'), v); input.focus(); } else ui.drafts[`${qid}:date`] = v.date ? v : null;
+        },
       });
       break;
     }
@@ -353,7 +368,7 @@ document.addEventListener('click', (e) => {
     case 'commit-done': dlg.close(); done(el.dataset.id); break;
     case 'capture': openCapture(ui.route === 'area' ? { area: ui.param } : ui.route === 'list' ? { list: ui.param } : ui.route === 'today' ? { ctx: 'today' } : {}); break;
     case 'new-in-quad': openCapture({ q: el.dataset.q }, 'مهمة في هذا المربع'); break;
-    case 'new-for-goal': openCapture({ goal: el.dataset.id }, `خطوة لـ«${goalById(el.dataset.id)?.title || ''}»`); break;
+    case 'new-for-goal': openCapture({ goal: el.dataset.id }, `خطوة لـ«${goalById(el.dataset.id)?.title || ''}»`); break; // يُهرَّب داخل openCapture
     case 'new-goal': openGoalDialog({}); break;
     case 'edit-goal': openGoalDialog(goalById(el.dataset.id)); break;
     case 'goal-emoji': {
@@ -400,7 +415,10 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'week': ui.weekOffset = Math.min(0, ui.weekOffset + Number(el.dataset.d)); render(); break;
-    case 'signout': store.signOut(); break;
+    case 'signout':
+      // قبل الخروج: إيقاف تنبيهات هذا الحساب على الجهاز، ومسح نسخته المحفوظة منه
+      notify.disable().finally(() => { store.forgetDevice(); store.signOut(); toast('سُجّل الخروج، ومُسحت بيانات الحساب من هذا الجهاز.'); });
+      break;
     case 'export': exportData(); break;
     case 'install': env.installPrompt?.prompt(); env.installPrompt = null; break;
     case 'check-update':
@@ -454,7 +472,7 @@ document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset?.draft) ui.drafts[el.dataset.draft] = el.value;
   if (el.classList.contains('ptitle')) autosize(el);
-  if (el.id === 'qa') {
+  if (el.classList.contains('qa-in')) {
     const box = el.closest('form')?.querySelector('.qa-tokens');
     if (box) {
       const p = parseQuick(el.value);
@@ -508,7 +526,7 @@ document.addEventListener('submit', (e) => {
       } else if (ds.list === 'assigned' && !f.assignee) msg = 'أُضيفت. حدّد الشخص من تفاصيلها أو اكتب @الاسم.';
       createTask(f);
       if (f.assignee) msg = `أُسندت إلى ${f.assignee}، والمتابعة بعد يومين.`;
-      delete ui.drafts.qa;
+      delete ui.drafts[form.dataset.qid];
       form.reset();
       setQuickDate(form, {});
       form.querySelector('.qa-tokens').innerHTML = '';
@@ -655,9 +673,32 @@ function setupAreaMap(domains) {
   return map;
 }
 
+/** تنقية ملف مستورد: معرّفات آمنة، تواريخ صحيحة، ونصوص فقط — لا شيء يُدرج في الصفحة كما هو. */
+const SAFE_ID = /^[\w-]{1,100}$/;
+function sanitize(data) {
+  const str = (v, max = 4000) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const date = (v) => (isDateKey(v) ? v : null);
+  const out = {};
+  for (const c of ['areas', 'goals', 'tasks', 'reviews']) {
+    out[c] = (Array.isArray(data[c]) ? data[c] : []).filter((x) => x && SAFE_ID.test(x.id)).map((x) => {
+      const y = { ...x, id: x.id };
+      if ('title' in y) y.title = str(y.title, 300);
+      if ('name' in y) y.name = str(y.name, 80);
+      if (c === 'areas') y.color = /^#[0-9a-f]{6}$/i.test(y.color) ? y.color : '#2f9474';
+      for (const k of ['due', 'followUp', 'focusDate', 'assignedAt', 'targetDate']) if (k in y) y[k] = date(y[k]);
+      if ('time' in y) y.time = /^\d{2}:\d{2}$/.test(y.time) ? y.time : null;
+      for (const k of ['areaId', 'goalId', 'nextId']) if (y[k] && !SAFE_ID.test(y[k])) y[k] = null;
+      if (Array.isArray(y.steps)) y.steps = y.steps.filter((st) => st && SAFE_ID.test(st.id)).map((st) => ({ id: st.id, title: str(st.title, 200), done: !!st.done }));
+      return y;
+    });
+  }
+  return { ...data, ...out };
+}
+
 async function importData(file) {
   try {
-    const data = JSON.parse(await file.text());
+    const raw = JSON.parse(await file.text());
+    const data = raw.app === 'command-center' ? sanitize(raw) : raw;
     if (data.app === 'command-center') {
       const count = (data.tasks || []).length;
       if (!confirm(`استيراد ${n(count)} مهمة سيستبدل كل البيانات الحالية. متابعة؟`)) return;
@@ -666,7 +707,7 @@ async function importData(file) {
       return;
     }
     if (Array.isArray(data.domains) && Array.isArray(data.tasks)) {
-      const { goals, tasks } = convertSetupFile(data, setupAreaMap(data.domains));
+      const { goals, tasks } = sanitize(convertSetupFile(data, setupAreaMap(data.domains)));
       const haveG = new Set(S().goals.map((g) => g.id));
       const haveT = new Set(S().tasks.map((t) => t.id));
       const newG = goals.filter((g) => !haveG.has(g.id));
@@ -688,7 +729,8 @@ async function importData(file) {
 function checkDay() {
   if (todayKey() !== lastDay) {
     lastDay = todayKey();
-    if (store.status.ready) { const k = rollover(); if (k) toast(`عادت ${n(k)} من أولويات الأمس إلى قوائمها. اختر ثلاث اليوم من جديد.`); }
+    // في وضع الحساب: لا ترحيل قبل تأكيد الخادم، كي لا يُبنى على نسخة قديمة
+    if (store.status.ready && (store.mode !== 'cloud' || store.status.serverConfirmed)) { const k = rollover(); if (k) toast(`عادت ${n(k)} من أولويات الأمس إلى قوائمها. اختر ثلاث اليوم من جديد.`); }
     render();
     notify.plan();
   }
@@ -737,6 +779,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const register = () => sw.register('sw.js', { updateViaCache: 'none' })
     .then((reg) => {
       env.swReg = reg;
+      notify.reg = reg;
+      notify.prefetch();
       const check = () => reg.update().catch(() => {});
       document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
       setInterval(check, 60 * 60 * 1000);

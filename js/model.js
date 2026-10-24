@@ -190,12 +190,13 @@ export function toggleTask(id) {
   const patch = { status: done ? 'done' : 'todo', completedAt: done ? new Date().toISOString() : null };
 
   if (done && t.repeat && !t.nextId) {
-    const base = t.due && t.due > todayKey() ? t.due : t.due || todayKey();
-    let next = nextOccurrence(base, t.repeat);
-    while (next <= todayKey()) next = nextOccurrence(next, t.repeat);
+    const base = t.due || todayKey();
+    const anchor = t.repeat === 'monthly' ? (t.repeatDay || parseKey(base).getDate()) : null;
+    let next = nextOccurrence(base, t.repeat, anchor);
+    while (next <= todayKey()) next = nextOccurrence(next, t.repeat, anchor);
     const copy = createTask({
       title: t.title, notes: t.notes, areaId: t.areaId, goalId: t.goalId,
-      important: t.important, urgent: t.urgent, repeat: t.repeat, due: next,
+      important: t.important, urgent: t.urgent, repeat: t.repeat, due: next, repeatDay: anchor,
       time: t.time || null, remind: t.remind ?? null, intent: t.intent || '', est: t.est || null,
       assignee: t.assignee, assignedAt: t.assignee ? todayKey() : null,
       followUp: t.assignee ? next : null,
@@ -299,8 +300,9 @@ export function buildSchedule(nowMs = Date.now()) {
 
   for (const t of openTasks()) {
     let at = taskFireAt(t);
+    const sn = t.snoozeUntil ? Date.parse(t.snoozeUntil) : 0;
+    if (at == null && sn > nowMs) at = sn; // تأجيل مهمة بلا تذكير (من تنبيه متابعة مثلًا) يصنع تذكيرًا
     if (at != null) {
-      const sn = t.snoozeUntil ? Date.parse(t.snoozeUntil) : 0;
       if (sn > at) at = sn;
       if (ok(at)) {
         const step = (t.steps || []).find((x) => !x.done);
@@ -350,7 +352,8 @@ export function buildSchedule(nowMs = Date.now()) {
       }
     }
   }
-  return out.sort((a, b) => a.at - b.at).slice(0, 200);
+  const cut = (x, n) => (x && x.length > n ? `${x.slice(0, n - 1)}…` : x);
+  return out.sort((a, b) => a.at - b.at).slice(0, 200).map((x) => ({ ...x, title: cut(x.title, 180), body: cut(x.body, 480) }));
 }
 
 /* ───────── استيراد ملف الإعداد القديم — دمج لا استبدال ───────── */

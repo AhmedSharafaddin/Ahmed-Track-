@@ -16,7 +16,10 @@
 
 const PROJECT = 'track-b87ef';
 const JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
-const MAX_ITEMS = 300;
+const MAX_ITEMS = 250;
+const PER_RUN = 4; // تنبيهات لكل تشغيل (كل دقيقة) — يبقى ضمن حد ١٠ مللي ثانية للمعالج في الخطة المجانية
+// خدمات التنبيهات المعروفة فقط (Apple، Google، Mozilla، Microsoft) — لا يُرسل الخادم لأي عنوان آخر
+const PUSH_HOSTS = /^(web\.push\.apple\.com|fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9-]+\.notify\.windows\.com|android\.googleapis\.com)$/;
 const enc = new TextEncoder();
 
 /* ───────── أدوات ───────── */
@@ -34,8 +37,11 @@ async function schema(db) {
     db.prepare('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, uid TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, device TEXT, created INTEGER NOT NULL, fails INTEGER NOT NULL DEFAULT 0)'),
     db.prepare('CREATE INDEX IF NOT EXISTS subs_uid ON subs(uid)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS reminders (uid TEXT NOT NULL, key TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (uid, key, at))'),
-    db.prepare('CREATE INDEX IF NOT EXISTS rem_due ON reminders(sent, at)'),
+    // صف واحد لكل مستخدم يحمل جدوله كاملًا (JSON) ⇒ استعلام واحد بدل مئات (حدود D1 المجانية: ٥٠ استعلامًا لكل تشغيل)
+    db.prepare('CREATE TABLE IF NOT EXISTS schedules (uid TEXT PRIMARY KEY, items TEXT NOT NULL, next_at INTEGER, updated INTEGER NOT NULL)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS sched_next ON schedules(next_at)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS sent (uid TEXT NOT NULL, key TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (uid, key, at))'),
+    db.prepare('CREATE TABLE IF NOT EXISTS hits (k TEXT PRIMARY KEY, at INTEGER NOT NULL)'),
   ]);
   schemaReady = true;
 }
@@ -115,7 +121,9 @@ async function sendPush(env, db, sub, payload) {
 /* ───────── التحقق من رمز دخول Firebase ───────── */
 let jwks = { at: 0, keys: new Map() };
 async function googleKey(kid, env) {
-  if (!jwks.keys.has(kid) || Date.now() - jwks.at > 6 * 3600_000) {
+  const stale = Date.now() - jwks.at > 6 * 3600_000;
+  const unknown = !jwks.keys.has(kid) && Date.now() - jwks.at > 60_000; // مفتاح مجهول: إعادة جلب مرة في الدقيقة كحد أقصى
+  if (stale || unknown) {
     const res = await fetch(env.JWKS_URL || JWKS_URL);
     const { keys } = await res.json();
     jwks = { at: Date.now(), keys: new Map(keys.map((k) => [k.kid, k])) };
@@ -148,18 +156,27 @@ async function verifyUser(req, env) {
 
 /* ───────── التحقق من المدخلات ───────── */
 const str = (v, max) => typeof v === 'string' && v.length <= max;
+const cut = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 function cleanItems(items) {
   if (!Array.isArray(items)) return null;
   const now = Date.now();
   const out = [];
   for (const it of items.slice(0, MAX_ITEMS)) {
-    if (!it || !str(it.key, 120) || !Number.isFinite(it.at) || !str(it.title, 300) || (it.body != null && !str(it.body, 600))) continue;
+    if (!it || !str(it.key, 120) || !Number.isFinite(it.at) || typeof it.title !== 'string' || !it.title) continue;
     if (it.at < now - 3600_000 || it.at > now + 40 * 864e5) continue;
-    const url = str(it.url, 300) && it.url.startsWith('#') ? it.url : '#/today';
+    const url = str(it.url, 300) && /^#\/[\w/?=&.-]*$/.test(it.url) ? it.url : '#/today';
     const kind = ['task', 'follow', 'brief', 'close'].includes(it.kind) ? it.kind : 'task';
-    out.push({ key: it.key, at: Math.round(it.at), payload: JSON.stringify({ title: it.title, body: it.body || '', url, kind, tag: it.key }) });
+    out.push({ key: it.key, at: Math.round(it.at), title: cut(it.title, 200), body: cut(it.body, 500), url, kind });
   }
-  return out;
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** حد بسيط للطلبات المتكررة (يحمي حصة الخطة المجانية). */
+async function limited(db, key, ms) {
+  const row = await db.prepare('SELECT at FROM hits WHERE k = ?').bind(key).first();
+  if (row && Date.now() - row.at < ms) return true;
+  await db.prepare('INSERT INTO hits (k, at) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET at = excluded.at').bind(key, Date.now()).run();
+  return false;
 }
 
 /* ───────── المسارات ───────── */
@@ -180,7 +197,9 @@ async function handle(req, env) {
 
   if (url.pathname === '/subscribe') {
     const s = body.subscription;
-    if (!s || !str(s.endpoint, 1000) || !s.endpoint.startsWith('https://') || !str(s.keys?.p256dh, 200) || !str(s.keys?.auth, 100)) return json({ error: 'bad subscription' }, 400);
+    let host = '';
+    try { host = new URL(s?.endpoint).hostname; } catch {}
+    if (!s || !str(s.endpoint, 1000) || !s.endpoint.startsWith('https://') || !PUSH_HOSTS.test(host) || !str(s.keys?.p256dh, 200) || !str(s.keys?.auth, 100)) return json({ error: 'bad subscription' }, 400);
     await db.prepare('INSERT INTO subs (endpoint, uid, p256dh, auth, device, created, fails) VALUES (?, ?, ?, ?, ?, ?, 0) ON CONFLICT(endpoint) DO UPDATE SET uid = excluded.uid, p256dh = excluded.p256dh, auth = excluded.auth, device = excluded.device, fails = 0')
       .bind(s.endpoint, uid, s.keys.p256dh, s.keys.auth, str(body.device, 40) ? body.device : null, Date.now()).run();
     const { n } = await db.prepare('SELECT COUNT(*) AS n FROM subs WHERE uid = ?').bind(uid).first();
@@ -189,21 +208,24 @@ async function handle(req, env) {
 
   if (url.pathname === '/unsubscribe') {
     if (str(body.endpoint, 1000)) await db.prepare('DELETE FROM subs WHERE endpoint = ? AND uid = ?').bind(body.endpoint, uid).run();
-    return json({ ok: true });
+    // لا أجهزة باقية ⇒ لا داعي للاحتفاظ بجدوله (عناوين مهامه) على الخادم
+    const { n } = await db.prepare('SELECT COUNT(*) AS n FROM subs WHERE uid = ?').bind(uid).first();
+    if (!n) await db.prepare('DELETE FROM schedules WHERE uid = ?').bind(uid).run();
+    return json({ ok: true, devices: n });
   }
 
   if (url.pathname === '/schedule') {
     const items = cleanItems(body.items);
     if (!items) return json({ error: 'bad items' }, 400);
-    // الجدول الجديد يحلّ محل غير المرسَل؛ المرسَل سابقًا بنفس المفتاح والوقت لا يُعاد (INSERT OR IGNORE)
-    const stmts = [db.prepare('DELETE FROM reminders WHERE uid = ? AND sent = 0').bind(uid)];
-    for (const it of items) stmts.push(db.prepare('INSERT OR IGNORE INTO reminders (uid, key, at, payload) VALUES (?, ?, ?, ?)').bind(uid, it.key, it.at, it.payload));
-    stmts.push(db.prepare('DELETE FROM reminders WHERE uid = ? AND at < ?').bind(uid, Date.now() - 8 * 864e5));
-    await db.batch(stmts);
+    // الجدول الجديد يحلّ محل القديم كاملًا؛ ما أُرسل سابقًا محفوظ في جدول sent فلا يُعاد
+    const next = items.length ? items[0].at : null;
+    await db.prepare('INSERT INTO schedules (uid, items, next_at, updated) VALUES (?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET items = excluded.items, next_at = excluded.next_at, updated = excluded.updated')
+      .bind(uid, JSON.stringify(items), next, Date.now()).run();
     return json({ ok: true, scheduled: items.length });
   }
 
   if (url.pathname === '/test') {
+    if (await limited(db, `test:${uid}`, 20_000)) return json({ error: 'slow down' }, 429);
     const subs = (await db.prepare('SELECT * FROM subs WHERE uid = ?').bind(uid).all()).results;
     const payload = { title: 'التنبيهات تعمل ✓', body: 'هكذا ستصلك تذكيرات مهامك، حتى والتطبيق مغلق.', url: '#/today', kind: 'brief', tag: 'test' };
     const res = await Promise.all(subs.map((s) => sendPush(env, db, s, payload).then((r) => r.status).catch(() => 0)));
@@ -213,36 +235,44 @@ async function handle(req, env) {
   return json({ error: 'not found' }, 404);
 }
 
-/* ───────── الإرسال الدوري (كل دقيقة) ───────── */
+/* ───────── الإرسال الدوري (كل دقيقة) ─────────
+   • نقرأ فقط المستخدمين الذين حان أقرب تنبيه لهم (next_at).
+   • نرسل حتى PER_RUN تنبيهات، والباقي في الدقيقة التالية (حدود الخطة المجانية).
+   • التنبيه يُسجَّل «مُرسلًا» بعد نجاح إرساله فقط ⇒ إن توقف التشغيل في المنتصف يُعاد لاحقًا ولا يضيع. */
 export async function runDue(env, now = Date.now()) {
   const db = env.DB;
   await schema(db);
-  const due = (await db.prepare('SELECT uid, key, at, payload FROM reminders WHERE sent = 0 AND at <= ? AND at > ? ORDER BY at LIMIT 25').bind(now, now - 6 * 3600_000).all()).results;
-  if (!due.length) return { sent: 0 };
-  // نعلّمها مُرسلة أولًا: إن تأخّر التشغيل أو تكرر لا يصل التنبيه مرتين
-  await db.batch(due.map((r) => db.prepare('UPDATE reminders SET sent = 1 WHERE uid = ? AND key = ? AND at = ?').bind(r.uid, r.key, r.at)));
-  const uids = [...new Set(due.map((r) => r.uid))];
-  const subsBy = new Map();
-  for (const u of uids) subsBy.set(u, (await db.prepare('SELECT * FROM subs WHERE uid = ?').bind(u).all()).results);
-
+  const users = (await db.prepare('SELECT uid, items FROM schedules WHERE next_at IS NOT NULL AND next_at <= ? LIMIT 10').bind(now).all()).results;
+  let budget = PER_RUN;
   let sent = 0;
-  const dead = [];
-  const failed = [];
-  await Promise.all(due.flatMap((r) => (subsBy.get(r.uid) || []).map(async (s) => {
-    try {
-      const res = await sendPush(env, db, s, JSON.parse(r.payload));
-      if (res.status === 404 || res.status === 410) dead.push(s.endpoint);
-      else if (res.ok) sent++;
-      else failed.push(s.endpoint);
-    } catch { failed.push(s.endpoint); }
-  })));
-  const stmts = [
-    ...dead.map((e) => db.prepare('DELETE FROM subs WHERE endpoint = ?').bind(e)),
-    ...failed.map((e) => db.prepare('UPDATE subs SET fails = fails + 1 WHERE endpoint = ?').bind(e)),
-  ];
-  if (failed.length) stmts.push(db.prepare('DELETE FROM subs WHERE fails > 50'));
-  if (stmts.length) await db.batch(stmts);
-  return { sent, dead: dead.length, failed: failed.length };
+  const dead = new Set();
+  for (const u of users) {
+    const items = JSON.parse(u.items);
+    const done = new Set((await db.prepare('SELECT key, at FROM sent WHERE uid = ? AND at > ?').bind(u.uid, now - 6 * 3600_000).all()).results.map((r) => `${r.key}|${r.at}`));
+    const due = items.filter((it) => it.at <= now && it.at > now - 6 * 3600_000 && !done.has(`${it.key}|${it.at}`));
+    const batch = due.slice(0, budget);
+    if (batch.length) {
+      const subs = (await db.prepare('SELECT * FROM subs WHERE uid = ?').bind(u.uid).all()).results;
+      const ok = [];
+      for (const it of batch) {
+        const res = await Promise.all(subs.map((s) => sendPush(env, db, s, { title: it.title, body: it.body, url: it.url, kind: it.kind, tag: it.key })
+          .then((r) => { if (r.status === 404 || r.status === 410) dead.add(s.endpoint); return r.ok; })
+          .catch(() => false)));
+        if (res.some(Boolean) || !subs.length) { ok.push(it); sent++; }
+      }
+      if (ok.length) await db.batch(ok.map((it) => db.prepare('INSERT OR IGNORE INTO sent (uid, key, at) VALUES (?, ?, ?)').bind(u.uid, it.key, it.at)));
+      budget -= batch.length;
+    }
+    // أقرب تنبيه لم يُرسل بعد لهذا المستخدم
+    const left = due.length - batch.length;
+    const future = items.find((it) => it.at > now);
+    const nextAt = left > 0 ? now : future ? future.at : null;
+    await db.prepare('UPDATE schedules SET next_at = ? WHERE uid = ?').bind(nextAt, u.uid).run();
+    if (budget <= 0) break;
+  }
+  if (dead.size) await db.batch([...dead].map((e) => db.prepare('DELETE FROM subs WHERE endpoint = ?').bind(e)));
+  if (new Date(now).getUTCMinutes() === 7) await db.prepare('DELETE FROM sent WHERE at < ?').bind(now - 8 * 864e5).run();
+  return { sent, dead: dead.size };
 }
 
 export default {
