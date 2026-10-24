@@ -60,9 +60,10 @@ export const QUADRANTS = {
 
 export const QUADRANT_ORDER = ['q1', 'q2', 'q3', 'q4'];
 
-export const AREA_COLORS = ['#2f7d6d', '#b5832a', '#5b6bbf', '#a24d6b', '#3f8fb0', '#7a6a55'];
+/** ألوان المجالات: نفس الإضاءة والتشبّع بدرجات لونية مختلفة (OKLCH) ⇒ متناسقة في الوضعين. */
+export const AREA_COLORS = ['#2f9474', '#a2782d', '#6e7abf', '#b6675a', '#2b8bb3', '#728b41', '#986cab', '#b06e3e', '#009394', '#b3647e'];
 
-/* ───────── إضافات الإصدار ٢ ───────── */
+/* ───────── إضافات الإصدار 2 ───────── */
 export const keyAdd = (k, days) => dateKey(addDays(parseKey(k), days));
 export const daysBetween = (a, b) => Math.round((parseKey(b) - parseKey(a)) / 864e5);
 
@@ -108,3 +109,29 @@ export function personColor(name = '') {
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 360;
   return `hsl(${h} 45% 45%)`;
 }
+
+/* ───────── الوقت والمدة ───────── */
+/** '14:30' ⇒ '2:30 م' */
+export function fmtTime(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${h < 12 ? 'ص' : 'م'}`;
+}
+/** 90 ⇒ '1 س 30 د' بأرقام لاتينية متسقة مع بقية التطبيق */
+export function fmtMin(min) {
+  if (!min) return '';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return [h ? `${h} س` : '', m ? `${m} د` : ''].filter(Boolean).join(' ');
+}
+export const REMINDS = { 0: 'عند الموعد', 15: 'قبل 15 دقيقة', 60: 'قبل ساعة', morning: 'صباح يوم الموعد' };
+export const ESTS = [15, 30, 60, 120, 240];
+
+/** رموز مقترحة للمجالات والأهداف — مرتبة بحسب الاستخدام في العمل والحياة. */
+export const EMOJIS = [
+  '💼', '🏢', '📦', '🚚', '🧾', '💰', '📊', '📈', '🧑‍💼', '🤝', '📞', '🛠️',
+  '💻', '📱', '⚙️', '🔐', '🌐', '🧠', '🤖', '🚀', '🎯', '🏆', '⭐', '🔥',
+  '🛋️', '🪑', '🏠', '🏗️', '🎨', '📸', '📝', '📚', '🎓', '✍️', '🗂️', '📅',
+  '🌱', '💪', '🏃', '🕌', '❤️', '👨‍👩‍👧', '✈️', '☕', '🎧', '💡', '🧭', '🕊️',
+];

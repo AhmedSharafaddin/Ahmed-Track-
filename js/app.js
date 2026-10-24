@@ -1,25 +1,32 @@
 // مركز القيادة — التشغيل والأحداث والعرض.
-// الشاشات في views.js، والمنطق في model.js، والبيانات والمزامنة في store.js.
+// الشاشات في views.js، والمنطق في model.js، والبيانات والمزامنة في store.js،
+// ومكوّنات الاختيار في picker.js، والتنبيهات في notify.js.
 
 import { store } from './store.js';
-import { uid, todayKey, keyAdd, n, esc } from './utils.js';
+import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay } from './utils.js';
 import {
   S, areas, areaById, goalById, taskById, isOpen, createTask, updateTask, toggleTask, focusPatch, FULL_MSG,
-  rollover, followedUp, parseQuick, convertSetupFile,
+  rollover, followedUp, parseQuick, convertSetupFile, settings, saveSettings, snooze, dayLoads,
 } from './model.js';
-import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I } from './views.js';
+import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
+import { notify } from './notify.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view');
 const paneEl = $('#pane');
+const navEl = $('#nav');
 const fx = $('#focus');
 const dlg = $('#dlg');
 const isDesk = () => matchMedia('(min-width: 900px)').matches;
 let lastDay = todayKey();
 
-/* ═════════════ العرض ═════════════ */
+/* ═════════════ العرض ═════════════
+   • كل التحديثات في إطار رسم واحد (requestAnimationFrame) مهما تعددت التغييرات.
+   • لا نلمس DOM إن لم يتغيّر الناتج (مقارنة نصية رخيصة مقابل إعادة بناء مكلفة).
+   • تغيّر حالة المزامنة فقط لا يعيد رسم الشاشة. */
 let scheduled = false;
 let forcePane = false;
+const last = { view: '', nav: '', pane: '', route: '' };
 
 function focusKey(el) {
   if (!el || el === document.body) return null;
@@ -32,48 +39,60 @@ function focusKey(el) {
 function render() {
   if (scheduled) return;
   scheduled = true;
-  requestAnimationFrame(() => {
-    scheduled = false;
-    if (!store.status.ready) return;
-    const active = document.activeElement;
-    const key = focusKey(active);
-    const sel = active && 'selectionStart' in active ? (() => { try { return [active.selectionStart, active.selectionEnd]; } catch { return null; } })() : null;
+  requestAnimationFrame(paint);
+}
 
-    // المحتوى الرئيسي
-    view.innerHTML = (ROUTES[ui.route] || ROUTES.today)();
-    document.body.classList.toggle('widget-mode', ui.route === 'widget');
+function paint() {
+  scheduled = false;
+  if (!store.status.ready) return;
+  const active = document.activeElement;
+  const key = focusKey(active);
+  let sel = null;
+  try { if (active && 'selectionStart' in active && active.selectionStart != null) sel = [active.selectionStart, active.selectionEnd]; } catch {}
 
-    // التنقل الجانبي والسفلي
-    const nv = navItems();
-    $('#nav').innerHTML = `${nv.smart}<hr />${nv.views}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I.plus}<span>مجال جديد</span></a>`;
-    const here = location.hash.replace(/#areas$/, '') || '#/today';
+  const html = (ROUTES[ui.route] || ROUTES.today)();
+  if (html !== last.view) { view.innerHTML = html; last.view = html; }
+  document.body.classList.toggle('widget-mode', ui.route === 'widget');
+  document.body.classList.add('ready');
+
+  const nv = navItems();
+  const navHtml = `${nv.smart}<hr />${nv.views}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a>`;
+  if (navHtml !== last.nav) { navEl.innerHTML = navHtml; last.nav = navHtml; }
+  const here = location.hash.replace(/#areas$/, '').replace(/\?.*$/, '') || '#/today';
+  if (here !== last.route) {
+    last.route = here;
     document.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));
     const tabFor = { today: 'today', matrix: 'matrix', goals: 'goals', review: 'review' }[ui.route] || 'lists';
     document.querySelectorAll('.tabbar a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === tabFor ? 'page' : 'false'));
+  } else {
+    navEl.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));
+  }
 
-    // لوحة التفاصيل: لا نعيد رسمها أثناء الكتابة فيها
-    const t = ui.sel ? taskById(ui.sel) : null;
-    if (ui.sel && !t) ui.sel = null;
-    const typing = active && paneEl.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && paneEl.dataset.id === ui.sel;
-    document.body.classList.toggle('pane-open', !!t);
-    if (!typing || forcePane) {
-      paneEl.innerHTML = pane(t);
-      paneEl.dataset.id = t ? t.id : '';
-      autosize($('#p-title'));
-    }
-    forcePane = false;
+  // لوحة التفاصيل: لا نعيد رسمها أثناء الكتابة فيها
+  const t = ui.sel ? taskById(ui.sel) : null;
+  if (ui.sel && !t) ui.sel = null;
+  document.body.classList.toggle('pane-open', !!t);
+  const typing = active && paneEl.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && paneEl.dataset.id === ui.sel;
+  if (!typing || forcePane) {
+    const ph = pane(t);
+    if (ph !== last.pane) { paneEl.innerHTML = ph; last.pane = ph; autosize($('#p-title')); }
+    paneEl.dataset.id = t ? t.id : '';
+  }
+  forcePane = false;
 
-    // وضع التركيز
-    const ft = ui.focusId ? taskById(ui.focusId) : null;
-    if (ui.focusId && !ft) ui.focusId = null;
-    if (ft) { fx.innerHTML = focusView(ft); fx.hidden = false; } else { fx.hidden = true; fx.innerHTML = ''; }
+  const ft = ui.focusId ? taskById(ui.focusId) : null;
+  if (ui.focusId && !ft) ui.focusId = null;
+  if (ft) {
+    const fh = focusView(ft);
+    if (fx.dataset.h !== fh) { fx.innerHTML = fh; fx.dataset.h = fh; }
+    fx.hidden = false;
+  } else if (!fx.hidden) { fx.hidden = true; fx.innerHTML = ''; fx.dataset.h = ''; }
 
-    renderSync();
-    if (key) {
-      const el = $(key);
-      if (el && el !== document.activeElement) { el.focus({ preventScroll: true }); if (sel) try { el.setSelectionRange(...sel); } catch {} }
-    }
-  });
+  renderSync();
+  if (key) {
+    const el = $(key);
+    if (el && el !== document.activeElement) { el.focus({ preventScroll: true }); if (sel) try { el.setSelectionRange(...sel); } catch {} }
+  }
 }
 
 function autosize(el) {
@@ -89,11 +108,11 @@ function renderSync() {
     local: ['', 'على هذا الجهاز'],
     'cloud-error': ['error', 'غير متصل'],
     'cloud-signed-out': ['error', 'سجّل الدخول'],
-    cloud: st.error ? ['error', 'خطأ مزامنة'] : st.pending || !st.serverConfirmed ? ['pending', 'يزامن…'] : ['ok', 'متزامن'],
+    cloud: st.error ? ['error', 'خطأ مزامنة'] : st.booting ? (st.offline ? ['error', 'دون اتصال'] : ['pending', 'يتصل…']) : st.pending || !st.serverConfirmed ? ['pending', 'يزامن…'] : ['ok', 'متزامن'],
   };
   const [state, label] = states[store.mode] || ['', ''];
-  el.dataset.state = state;
-  el.textContent = label;
+  if (el.dataset.state !== state) el.dataset.state = state;
+  if (el.textContent !== label) el.textContent = label;
 }
 
 let toastTimer;
@@ -107,38 +126,70 @@ function toast(msg, undo) {
 }
 
 /* ═════════════ التنقل ═════════════ */
+let pendingTask = null; // مهمة مطلوبة من تنبيه قبل وصول البيانات
 function onRoute() {
-  const m = location.hash.match(/^#\/(\w+)(?:\/([^#]+))?/) || [];
+  const h = location.hash;
+  const tm = h.match(/^#\/task\/([^?#]+)(?:\?a=(\w+))?/);
+  if (tm) {
+    pendingTask = { id: decodeURIComponent(tm[1]), a: tm[2] || '' };
+    history.replaceState(null, '', '#/today');
+    handlePendingTask();
+  }
+  const m = location.hash.match(/^#\/(\w+)(?:\/([^#?]+))?/) || [];
   const r = ROUTES[m[1]] ? m[1] : 'today';
   const changed = r !== ui.route || (m[2] || null) !== ui.param;
   ui.route = r;
   ui.param = m[2] ? decodeURIComponent(m[2]) : null;
   if (changed && r !== 'review') ui.weekOffset = 0;
-  if (changed) ui.sel = null;
+  if (changed && !tm) ui.sel = null;
   if (r !== 'search' && changed) { ui.q = ''; const q = $('#q'); if (q) q.value = ''; }
   document.title = r === 'widget' ? 'أولويات اليوم' : 'مركز القيادة';
   render();
   if (changed) window.scrollTo(0, 0);
-  if (location.hash.endsWith('#areas')) setTimeout(() => $('#areas')?.scrollIntoView({ block: 'start' }), 50);
+  if (location.hash.endsWith('#areas')) setTimeout(() => $('#areas')?.scrollIntoView({ block: 'start' }), 60);
+}
+
+/** فتح مهمة من تنبيه: «ابدأ» ⇒ وضع التركيز، «أجّل» ⇒ تأجيل، وإلا لحظة القرار. */
+function handlePendingTask() {
+  if (!pendingTask || !store.status.ready) return;
+  const t = taskById(pendingTask.id);
+  if (!t) return; // ننتظر وصول البيانات من المزامنة
+  const { a } = pendingTask;
+  pendingTask = null;
+  if (!isOpen(t)) { toast('هذه المهمة أُنجزت بالفعل.'); return; }
+  if (a === 'start') { startFocus(t.id); return; }
+  if (a === 'snooze') { toast(snooze(t.id, 15)); return; }
+  ui.sel = isDesk() ? t.id : null;
+  dlg.innerHTML = commitSheet(t);
+  dlg.classList.add('commit-dlg');
+  dlg.showModal();
+  setTimeout(() => $('[data-act="commit-start"]', dlg)?.focus(), 30);
 }
 
 /* ═════════════ الحوارات ═════════════ */
 function openCapture(ctx = {}, title = 'مهمة جديدة') {
-  dlg.innerHTML = `<div class="cap"><div class="cap-h"><h2>${title}</h2><button class="ib" data-act="close" aria-label="إغلاق">${I.x}</button></div>${quickAdd({ ...ctx, dialog: '1' }, 'ماذا تريد أن تنجز؟')}</div>`;
+  dlg.classList.remove('commit-dlg');
+  dlg.innerHTML = `<div class="cap"><div class="cap-h"><h2>${title}</h2><button class="ib" data-act="close" aria-label="إغلاق">${I('x')}</button></div>${quickAdd({ ...ctx, dialog: '1' }, 'ماذا تريد أن تنجز؟')}</div>`;
   dlg.showModal();
   setTimeout(() => $('#qa', dlg)?.focus(), 30);
 }
 
 function openGoalDialog(g = {}) {
   const isNew = !g.id;
-  const opt = (sel) => '<option value="">بدون مجال</option>' + areas().map((a) => `<option value="${a.id}"${a.id === sel ? ' selected' : ''}>${esc(a.name)}</option>`).join('');
+  dlg.classList.remove('commit-dlg');
+  const opt = (sel) => '<option value="">بدون مجال</option>' + areas().map((a) => `<option value="${a.id}"${a.id === sel ? ' selected' : ''}>${a.emoji ? `${esc(a.emoji)} ` : ''}${esc(a.name)}</option>`).join('');
   dlg.innerHTML = `<form data-form="goal" data-id="${g.id || ''}" class="stack">
-    <div class="cap-h"><h2>${isNew ? 'هدف جديد' : 'تعديل الهدف'}</h2><button class="ib" type="button" data-act="close" aria-label="إغلاق">${I.x}</button></div>
-    <label class="fld"><span>الهدف</span><input class="in" name="title" value="${esc(g.title || '')}" required maxlength="160" placeholder="نتيجة واضحة يمكن قياسها" /></label>
+    <div class="cap-h"><h2>${isNew ? 'هدف جديد' : 'تعديل الهدف'}</h2><button class="ib" type="button" data-act="close" aria-label="إغلاق">${I('x')}</button></div>
+    <div class="goal-title">
+      <button type="button" class="emo-btn big" data-act="goal-emoji" aria-label="رمز الهدف">${g.emoji ? esc(g.emoji) : I('smiley')}</button>
+      <input type="hidden" name="emoji" value="${esc(g.emoji || '')}" />
+      <label class="fld"><span>الهدف</span><input class="in" name="title" value="${esc(g.title || '')}" required maxlength="160" placeholder="نتيجة واضحة يمكن قياسها" /></label>
+    </div>
     <label class="fld"><span>لماذا؟</span><textarea class="in" name="why" rows="3" maxlength="1000" placeholder="ما الذي سيتغيّر إن تحقق؟">${esc(g.why || '')}</textarea></label>
     <div class="two">
       <label class="fld"><span>المجال</span><select class="in" name="areaId">${opt(g.areaId)}</select></label>
-      <label class="fld"><span>الموعد المستهدف</span><input class="in" type="date" name="targetDate" value="${esc(g.targetDate || '')}" /></label>
+      <div class="fld"><span>الموعد المستهدف</span><input type="hidden" name="targetDate" value="${esc(g.targetDate || '')}" />
+        <button type="button" class="in pick-btn" data-act="goal-date">${I('cal')}<span>${g.targetDate ? relDay(g.targetDate) : 'اختر تاريخًا'}</span></button></div>
     </div>
     <label class="fld"><span>الحالة</span><select class="in" name="status">
       <option value="active"${!g.status || g.status === 'active' ? ' selected' : ''}>نشط</option>
@@ -151,8 +202,18 @@ function openGoalDialog(g = {}) {
   setTimeout(() => $('[name=title]', dlg)?.focus(), 30);
 }
 
+/** منتقي التاريخ والرمز يُحمَّل عند أول استخدام فقط (لا يثقل الفتح). */
+const openDatePicker = (o) => import('./picker.js').then((m) => m.openDatePicker(o));
+const openEmojiPicker = (o) => import('./picker.js').then((m) => m.openEmojiPicker(o));
+const pickerBase = () => ({ loads: dayLoads(), capacity: (Number(settings().capacity) || 6) * 60 });
+
 /* ═════════════ وضع التركيز ═════════════ */
 let fxTick = null;
+function startFocus(id) {
+  ui.focusId = id;
+  ui.timer = { total: ui.timer.total, left: ui.timer.total, running: false, endAt: 0 };
+  render();
+}
 function tick() {
   const T = ui.timer;
   if (!T.running) return;
@@ -168,6 +229,7 @@ function tick() {
     document.title = 'مركز القيادة';
     chime();
     toast('انتهت الجلسة. خذ خمس دقائق استراحة ثم عد.');
+    fx.dataset.h = '';
     render();
   }
 }
@@ -209,10 +271,18 @@ function done(id) {
   if (msg) toast(msg);
 }
 
+/** تعبئة حقول الموعد المخفية في نموذج الإضافة السريعة، وعرضها على الزر. */
+function setQuickDate(form, v) {
+  const vals = { due: v.date, time: v.time, remind: v.remind, intent: v.intent };
+  for (const k of Object.keys(vals)) form.elements[k].value = vals[k] ?? '';
+  const btn = form.querySelector('.qa-date');
+  btn.classList.toggle('on', !!v.date);
+  btn.querySelector('span').textContent = v.date ? `${relDay(v.date)}${v.time ? ` ${fmtTime(v.time)}` : ''}${v.remind != null ? ' 🔔' : ''}` : 'موعد';
+}
+
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
-  if (!el || (el.tagName === 'INPUT' && el.type !== 'checkbox')) return;
-  if (el.tagName === 'INPUT') return;
+  if (!el || el.tagName === 'INPUT') return;
   const { act } = el.dataset;
   const id = el.dataset.id || ui.sel;
   switch (act) {
@@ -227,13 +297,39 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'unfocus': forcePane = true; updateTask(id, { focusDate: null }); break;
-    case 'followed': forcePane = true; followedUp(id); toast('سُجّلت المتابعة. التالية بعد ٣ أيام.'); break;
-    case 'set-due': forcePane = true; updateTask(ui.sel, { due: el.dataset.v || null }); break;
+    case 'followed': forcePane = true; followedUp(id); toast('سُجّلت المتابعة. التالية بعد 3 أيام.'); break;
+    case 'set-est': { const t = taskById(ui.sel); const v = Number(el.dataset.v); forcePane = true; updateTask(ui.sel, { est: t?.est === v ? null : v }); break; }
+    case 'pick-due': {
+      const t = taskById(ui.sel);
+      if (!t) break;
+      openDatePicker({
+        ...pickerBase(), title: 'الموعد والتذكير',
+        value: { date: t.due, time: t.time, remind: t.remind, intent: t.intent },
+        onSave: (v) => { forcePane = true; updateTask(t.id, { due: v.date, time: v.date ? v.time : null, remind: v.date ? v.remind : null, intent: v.intent || '' }); if (v.remind != null) maybeAskNotify(); },
+      });
+      break;
+    }
+    case 'pick-follow': {
+      const t = taskById(ui.sel);
+      if (!t) break;
+      openDatePicker({ ...pickerBase(), mode: 'date', title: `متى تتابع مع ${t.assignee}؟`, value: { date: t.followUp }, onSave: (v) => { forcePane = true; updateTask(t.id, { followUp: v.date }); } });
+      break;
+    }
+    case 'qa-date': {
+      const form = el.closest('form');
+      const f = form.elements;
+      openDatePicker({
+        ...pickerBase(), title: 'موعد المهمة الجديدة',
+        value: { date: f.due.value || null, time: f.time.value || null, remind: f.remind.value === '' ? null : f.remind.value === 'morning' ? 'morning' : Number(f.remind.value), intent: f.intent.value },
+        onSave: (v) => { setQuickDate(form, v); form.querySelector('#qa')?.focus(); },
+      });
+      break;
+    }
     case 'step-toggle': setSteps(id, (s) => { s[+el.dataset.i].done = !s[+el.dataset.i].done; return s; }); break;
     case 'step-del': setSteps(id, (s) => s.filter((_, i) => i !== +el.dataset.i)); break;
     case 'focus-steps': $('#p-newstep')?.focus(); break;
     case 'focus-assign': $('#p-assignee')?.focus(); break;
-    case 'reset-slips': forcePane = true; updateTask(ui.sel, { slips: 0 }); break;
+    case 'reset-slips': forcePane = true; updateTask(ui.sel, { slips: 0, snoozes: 0 }); break;
     case 'del-task': {
       const t = taskById(id);
       if (!t) break;
@@ -242,11 +338,7 @@ document.addEventListener('click', (e) => {
       toast('حُذفت المهمة.', () => store.put('tasks', t));
       break;
     }
-    case 'start-focus':
-      ui.focusId = id;
-      ui.timer = { total: ui.timer.total, left: ui.timer.total, running: false, endAt: 0 };
-      render();
-      break;
+    case 'start-focus': startFocus(id); break;
     case 'end-focus': endFocus(); break;
     case 'fx-len': if (!ui.timer.running) { const s = +el.dataset.m * 60; ui.timer.total = s; ui.timer.left = s; render(); } break;
     case 'fx-toggle': {
@@ -256,11 +348,40 @@ document.addEventListener('click', (e) => {
       render();
       break;
     }
+    case 'commit-start': dlg.close(); startFocus(el.dataset.id); break;
+    case 'commit-snooze': dlg.close(); toast(snooze(el.dataset.id, el.dataset.v === 'tomorrow' ? 'tomorrow' : Number(el.dataset.v))); break;
+    case 'commit-done': dlg.close(); done(el.dataset.id); break;
     case 'capture': openCapture(ui.route === 'area' ? { area: ui.param } : ui.route === 'list' ? { list: ui.param } : ui.route === 'today' ? { ctx: 'today' } : {}); break;
     case 'new-in-quad': openCapture({ q: el.dataset.q }, 'مهمة في هذا المربع'); break;
     case 'new-for-goal': openCapture({ goal: el.dataset.id }, `خطوة لـ«${goalById(el.dataset.id)?.title || ''}»`); break;
     case 'new-goal': openGoalDialog({}); break;
     case 'edit-goal': openGoalDialog(goalById(el.dataset.id)); break;
+    case 'goal-emoji': {
+      const form = el.closest('form');
+      openEmojiPicker({ value: form.elements.emoji.value, title: 'رمز الهدف', onPick: (v) => { form.elements.emoji.value = v || ''; el.innerHTML = v ? esc(v) : I('smiley'); } });
+      break;
+    }
+    case 'goal-date': {
+      const form = el.closest('form');
+      openDatePicker({ ...pickerBase(), mode: 'date', title: 'الموعد المستهدف', value: { date: form.elements.targetDate.value || null },
+        onSave: (v) => { form.elements.targetDate.value = v.date || ''; el.querySelector('span').textContent = v.date ? relDay(v.date) : 'اختر تاريخًا'; } });
+      break;
+    }
+    case 'edit-area-emoji': {
+      const a = areaById(el.dataset.id);
+      if (a) openEmojiPicker({ value: a.emoji || '', title: `رمز «${a.name}»`, onPick: (v) => store.put('areas', { ...a, emoji: v || null }) });
+      break;
+    }
+    case 'area-color': { const a = areaById(el.dataset.id); if (a) store.put('areas', { ...a, color: el.dataset.v }); break; }
+    case 'set-capacity': saveSettings({ capacity: Number(el.dataset.v) }); break;
+    case 'notify-on':
+      notify.enable().then((r) => {
+        toast({ granted: 'فُعّلت التنبيهات.', denied: 'رُفض الإذن. فعّله من إعدادات المتصفح.', 'server-failed': 'فُعّلت محليًا، وتعذّر ربط خادم التنبيهات الآن.', unsupported: 'هذا المتصفح لا يدعم التنبيهات.' }[r] || 'لم تُفعّل التنبيهات.');
+        last.view = ''; render();
+      });
+      break;
+    case 'notify-off': notify.disable().then(() => { toast('أُوقفت التنبيهات على هذا الجهاز.'); last.view = ''; render(); }); break;
+    case 'notify-test': notify.test().then((r) => toast(r.devices ? `أُرسل لـ${n(r.devices)} ${r.devices === 1 ? 'جهاز' : 'أجهزة'}.` : 'لا أجهزة مربوطة.')).catch(() => toast('تعذّر الاتصال بخادم التنبيهات.')); break;
     case 'close': dlg.close(); break;
     case 'del-goal':
       if (confirm('حذف الهدف؟ مهامه تبقى لكن بلا هدف.')) {
@@ -296,10 +417,23 @@ document.addEventListener('click', (e) => {
   }
 });
 
-/* حقول لوحة التفاصيل تُحفظ تلقائيًا عند التغيير (مثل To Do) */
+/** أول مرة يضبط فيها تذكيرًا: نعرض تفعيل التنبيهات في لحظة الحاجة لا قبلها. */
+function maybeAskNotify() {
+  if (!notify.supported || notify.permission !== 'default' || notify.needsInstall) return;
+  toast('لن يصلك التذكير قبل تفعيل التنبيهات.', null);
+  const el = $('#toast');
+  const b = document.createElement('button');
+  b.className = 'link';
+  b.textContent = 'فعّلها الآن';
+  b.onclick = () => { el.classList.remove('show'); notify.enable().then((r) => toast(r === 'granted' ? 'فُعّلت التنبيهات.' : 'لم تُفعّل التنبيهات.')); };
+  el.appendChild(b);
+}
+
+/* حقول لوحة التفاصيل تُحفظ تلقائيًا عند التغيير */
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.act === 'import' && el.files[0]) { importData(el.files[0]).finally(() => { el.value = ''; }); return; }
+  if (el.dataset.set) { saveSettings({ [el.dataset.set]: el.value || null }); return; }
   if (el.dataset.f && ui.sel) {
     const f = el.dataset.f;
     let v = el.type === 'checkbox' ? el.checked : el.value.trim();
@@ -324,7 +458,7 @@ document.addEventListener('input', (e) => {
     const box = el.closest('form')?.querySelector('.qa-tokens');
     if (box) {
       const p = parseQuick(el.value);
-      box.innerHTML = p.tokens.map((t) => `<span class="tok k-${t.k}">${t.k === 'assignee' ? I.user : t.k === 'area' ? `<i style="--c:${esc(t.color)}"></i>` : I.star}${esc(t.v)}</span>`).join('');
+      box.innerHTML = p.tokens.map((t) => `<span class="tok k-${t.k}">${t.k === 'assignee' ? I('user') : t.k === 'area' ? (t.emoji ? esc(t.emoji) : `<i style="--c:${esc(t.color)}"></i>`) : I('star', 'f')}${esc(t.v)}</span>`).join('');
     }
   }
   if (el.dataset?.act === 'search') {
@@ -351,6 +485,7 @@ document.addEventListener('submit', (e) => {
       const ds = form.dataset;
       const goal = ds.goal ? goalById(ds.goal) : null;
       const q = ds.q || '';
+      const rem = get('remind');
       const f = {
         title: p.title,
         important: p.important || on('important') || ds.list === 'important' || q === 'q1' || q === 'q2',
@@ -358,6 +493,9 @@ document.addEventListener('submit', (e) => {
         areaId: p.areaId || ds.area || goal?.areaId || null,
         goalId: goal?.id || null,
         due: get('due') || (ds.list === 'planned' ? todayKey() : null),
+        time: get('time') || null,
+        remind: rem === '' ? null : rem === 'morning' ? 'morning' : Number(rem),
+        intent: get('intent'),
         assignee: p.assignee || null,
         assignedAt: p.assignee ? todayKey() : null,
         followUp: p.assignee ? keyAdd(todayKey(), 2) : null,
@@ -372,9 +510,11 @@ document.addEventListener('submit', (e) => {
       if (f.assignee) msg = `أُسندت إلى ${f.assignee}، والمتابعة بعد يومين.`;
       delete ui.drafts.qa;
       form.reset();
+      setQuickDate(form, {});
       form.querySelector('.qa-tokens').innerHTML = '';
       if (ds.dialog) dlg.close();
       if (msg) toast(msg);
+      if (f.remind != null) maybeAskNotify();
       render();
       break;
     }
@@ -385,12 +525,20 @@ document.addEventListener('submit', (e) => {
       form.reset();
       break;
     }
+    case 'catch': {
+      const v = get('title');
+      if (!v) return;
+      createTask({ title: v });
+      form.reset();
+      toast('سُجّلت في الوارد. عد لتركيزك.');
+      break;
+    }
     case 'goal': {
       const id = form.dataset.id;
       const old = id ? goalById(id) : {};
       const title = get('title');
       if (!title) return;
-      store.put('goals', { id: id || uid(), ...old, title, why: get('why'), areaId: get('areaId') || null, targetDate: get('targetDate') || null, status: get('status') || 'active' });
+      store.put('goals', { id: id || uid(), ...old, title, emoji: get('emoji') || null, why: get('why'), areaId: get('areaId') || null, targetDate: get('targetDate') || null, status: get('status') || 'active' });
       dlg.close();
       break;
     }
@@ -402,16 +550,17 @@ document.addEventListener('submit', (e) => {
       toast('حُفظت المراجعة.');
       break;
     }
-    case 'name': try { localStorage.setItem('cc:name', get('name')); } catch {} toast('حُفظ.'); render(); break;
+    case 'name': saveSettings({ name: get('name') }); try { localStorage.setItem('cc:name', get('name')); } catch {} toast('حُفظ.'); break;
     case 'area': {
       const a = areaById(form.dataset.id);
-      if (a && get('name')) { store.put('areas', { ...a, name: get('name'), color: get('color') }); toast('حُفظ المجال.'); }
+      if (a && get('name')) { store.put('areas', { ...a, name: get('name') }); toast('حُفظ المجال.'); }
       break;
     }
     case 'new-area': {
       if (!get('name')) return;
       const order = Math.max(0, ...S().areas.map((a) => a.order || 0)) + 1;
-      store.put('areas', { id: uid(), name: get('name'), color: get('color'), order });
+      const colors = ['#2f9474', '#a2782d', '#6e7abf', '#b6675a', '#2b8bb3', '#728b41', '#986cab', '#b06e3e', '#009394', '#b3647e'];
+      store.put('areas', { id: uid(), name: get('name'), color: colors[S().areas.length % colors.length], emoji: null, order });
       form.reset();
       break;
     }
@@ -422,13 +571,14 @@ document.addEventListener('submit', (e) => {
       const msgs = {
         'auth/invalid-credential': 'البريد أو كلمة المرور غير صحيحة.',
         'auth/email-already-in-use': 'هذا البريد مسجّل. استخدم «دخول».',
-        'auth/weak-password': 'كلمة المرور قصيرة (٦ أحرف على الأقل).',
+        'auth/weak-password': 'كلمة المرور قصيرة (6 أحرف على الأقل).',
         'auth/network-request-failed': 'لا يوجد اتصال بالإنترنت.',
         'auth/operation-not-allowed': 'إنشاء الحسابات مغلق في إعدادات Firebase.',
         'auth/admin-restricted-operation': 'إنشاء الحسابات مغلق في إعدادات Firebase.',
         'auth/too-many-requests': 'محاولات كثيرة. انتظر قليلًا ثم أعد المحاولة.',
       };
       const fail = (err) => toast(msgs[err.code] || `تعذّر الإجراء (${err.code || err.message}).`);
+      if (!store.cloud) return toast('خدمة المزامنة لم تُحمّل بعد. تأكد من الاتصال وحاول بعد لحظات.');
       if (op === 'reset') {
         if (!email) return toast('اكتب بريدك أولًا.');
         store.resetPassword(email).then(() => toast('أُرسل رابط إعادة التعيين إلى بريدك.'), fail);
@@ -446,11 +596,11 @@ document.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (e.key === 'Escape') {
     if (ui.focusId) { endFocus(); return; }
-    if (dlg.open) return;
+    if (document.querySelector('dialog[open]')) return;
     if (ui.sel) { ui.sel = null; render(); }
     return;
   }
-  if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || dlg.open) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || document.querySelector('dialog[open]')) return;
   if (e.code === 'KeyN') { e.preventDefault(); const qa = $('#qa', view); if (qa && isDesk()) qa.focus(); else openCapture(ui.route === 'today' ? { ctx: 'today' } : {}); }
   if (e.code === 'Slash') { e.preventDefault(); if (isDesk()) $('#q').focus(); else location.hash = '#/lists'; }
 });
@@ -495,16 +645,13 @@ function exportData() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-/** ملف الإعداد القديم: كل مجالاته تُوزّع على مجالاتك الثلاثة الحالية. */
 function setupAreaMap(domains) {
   const find = (word) => areas().find((a) => a.name.includes(word))?.id || null;
   const asas = find('أسس');
   const joby = find('الجوبي');
   const personal = find('شخصي');
   const map = {};
-  for (const d of domains) {
-    map[d.id] = d.name.includes('الجوبي') ? joby : /شخصي|التطوير المهني/.test(d.name) ? personal : asas;
-  }
+  for (const d of domains) map[d.id] = d.name.includes('الجوبي') ? joby : /شخصي|التطوير المهني/.test(d.name) ? personal : asas;
   return map;
 }
 
@@ -543,36 +690,39 @@ function checkDay() {
     lastDay = todayKey();
     if (store.status.ready) { const k = rollover(); if (k) toast(`عادت ${n(k)} من أولويات الأمس إلى قوائمها. اختر ثلاث اليوم من جديد.`); }
     render();
+    notify.plan();
   }
 }
 
 let rolledFor = null;
-store.subscribe((state, status) => {
+let planT = 0;
+store.subscribe((state, status, dataChanged) => {
   const source = store.mode === 'cloud' ? store.user?.uid : 'local';
   if (rolledFor !== source && status.ready && (store.mode !== 'cloud' || status.serverConfirmed)) {
     rolledFor = source;
     const k = rollover();
     if (k) toast(`عادت ${n(k)} من أولويات الأمس لم تُنجز. اختر ثلاث اليوم من جديد.`);
   }
+  if (!dataChanged) { renderSync(); return; }
   render();
+  handlePendingTask();
+  clearTimeout(planT);
+  planT = setTimeout(() => notify.plan(), 600); // الجدول يُبنى بعد هدوء التغييرات
 });
 
 window.addEventListener('hashchange', onRoute);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkDay(); if (ui.timer.running) tick(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkDay(); if (ui.timer.running) tick(); notify.plan(); } });
 setInterval(checkDay, 60_000);
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); env.installPrompt = e; if (ui.route === 'settings') render(); });
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); env.installPrompt = e; if (ui.route === 'settings') { last.view = ''; render(); } });
 matchMedia('(min-width: 900px)').addEventListener('change', render);
 
 onRoute();
 store.boot().catch((e) => { console.error(e); view.innerHTML = '<p class="loading">تعذّر تشغيل التطبيق.</p>'; });
 
-/* ═════════════ التحديث التلقائي ═════════════
-   • updateViaCache:'none' ⇒ فحص sw.js من الخادم دائمًا، لا من ذاكرة المتصفح.
-   • فحص عند الفتح، وعند العودة للتطبيق (الآيفون يُبقي التطبيق في الذاكرة ولا يعيد تحميله)، وكل ساعة.
-   • حين يتولّى إصدار جديد: إعادة تحميل مرة واحدة ⇒ تظهر النسخة الجديدة دون تدخّل. */
+/* ═════════════ التحديث التلقائي والتنبيهات من الـService Worker ═════════════ */
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const sw = navigator.serviceWorker;
-  const hadController = Boolean(sw.controller); // أول تثبيت لا يحتاج إعادة تحميل
+  const hadController = Boolean(sw.controller);
   let reloading = false;
   sw.addEventListener('controllerchange', () => {
     if (!hadController || reloading) return;
@@ -580,9 +730,11 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     location.reload();
   });
   sw.addEventListener('message', (e) => {
-    if (e.data?.version) { env.appVersion = e.data.version; if (ui.route === 'settings') render(); }
+    if (e.data?.version) { env.appVersion = e.data.version; if (ui.route === 'settings') { last.view = ''; render(); } }
+    if (e.data?.type === 'nav' && e.data.hash) location.hash = e.data.hash; // نقر على تنبيه والتطبيق مفتوح
   });
-  sw.register('sw.js', { updateViaCache: 'none' })
+  // التسجيل بعد اكتمال الفتح: في أول زيارة لا ينافس تنزيلُ ملفات التخزين عرضَ الشاشة
+  const register = () => sw.register('sw.js', { updateViaCache: 'none' })
     .then((reg) => {
       env.swReg = reg;
       const check = () => reg.update().catch(() => {});
@@ -591,4 +743,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       sw.ready.then((r) => r.active?.postMessage('version'));
     })
     .catch((e) => console.warn('SW registration failed', e));
+  if (sw.controller) register();
+  else if (document.readyState === 'complete') setTimeout(register, 1500);
+  else window.addEventListener('load', () => setTimeout(register, 1500), { once: true });
 }

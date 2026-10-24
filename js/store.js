@@ -1,7 +1,11 @@
-// طبقة البيانات: واجهة واحدة للتطبيق، ومحرّكان خلفها.
-//  • LocalAdapter  — localStorage على الجهاز الحالي (افتراضي، بلا حساب).
-//  • CloudAdapter  — Firebase Firestore مع نسخة محلية للعمل دون اتصال ومزامنة لحظية.
-// التطبيق لا يعرف أي محرّك يعمل؛ يستدعي store.put / store.remove فقط.
+// طبقة البيانات: واجهة واحدة للتطبيق، وثلاثة محرّكات خلفها.
+//  • LocalAdapter    — localStorage على الجهاز (بلا حساب).
+//  • SnapshotAdapter — آخر نسخة من بيانات الحساب محفوظة على الجهاز: تُعرض فورًا عند الفتح
+//                      قبل تحميل Firebase، وأي تعديل خلالها يُحفظ في طابور ويُرسل لاحقًا.
+//  • CloudAdapter    — Firebase Firestore بمزامنة لحظية، ونسخة محلية للعمل دون اتصال.
+//
+// لماذا SnapshotAdapter؟ مكتبة Firebase نحو ٦٩٠ ك.ب. انتظارها قبل أول عرض كان سبب بطء الفتح.
+// الآن: الشاشة تظهر من النسخة المحلية فورًا، وFirebase يُحمَّل بعد أول رسم ويُحدّث ما تغيّر فقط.
 
 import { firebaseConfig } from './config.js';
 import { now } from './utils.js';
@@ -9,30 +13,45 @@ import { now } from './utils.js';
 export const COLLS = ['areas', 'goals', 'tasks', 'reviews'];
 const LS_DATA = 'cc:data:v1';
 const LS_MIGRATED = 'cc:migrated:'; // + uid
+const LS_LAST = 'cc:lastUser'; // {uid, email} آخر حساب سجّل الدخول على هذا الجهاز
+const LS_SNAP = 'cc:snap:'; // + uid  آخر نسخة من بيانات الحساب
+const LS_QUEUE = 'cc:queue:'; // + uid  كتابات تمت قبل جاهزية Firebase
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 
 /** المجالات الافتراضية بمعرّفات ثابتة — تكرار الإضافة لا يُنشئ نسخًا مكررة. */
 export const SEED_AREAS = [
-  { id: 'area-asas', name: 'أسس تيليكوم', color: '#2f7d6d', order: 1 },
-  { id: 'area-aljoby', name: 'الجوبي', color: '#b5832a', order: 2 },
-  { id: 'area-personal', name: 'شخصي / تطوير ذاتي', color: '#5b6bbf', order: 3 },
+  { id: 'area-asas', name: 'أسس تيليكوم', color: '#2f7d6d', emoji: '💼', order: 1 },
+  { id: 'area-aljoby', name: 'الجوبي', color: '#b5832a', emoji: '🛋️', order: 2 },
+  { id: 'area-personal', name: 'شخصي / تطوير ذاتي', color: '#5b6bbf', emoji: '🌱', order: 3 },
 ];
 
 const emptyState = () => ({ areas: [], goals: [], tasks: [], reviews: [] });
 const clean = (o) => JSON.parse(JSON.stringify(o)); // Firestore يرفض undefined
+const readJSON = (k) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } };
+const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { console.warn('storage write failed', k, e); return false; } };
+
+/** ينفّذ الدالة مرة واحدة بعد انتهاء سلسلة استدعاءات متتالية (يمنع كتابة التخزين عشرات المرات). */
+function debounce(fn, ms) {
+  let t;
+  const d = (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+  d.flush = (...a) => { clearTimeout(t); fn(...a); };
+  return d;
+}
+
+/** تعديل مصفوفة مجموعة بنسخة جديدة (لا نعدّل الكائنات في مكانها). */
+function upsert(list, item) {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i >= 0) { const c = list.slice(); c[i] = item; return c; }
+  return [...list, item];
+}
 
 /* ───────────── المحرّك المحلي ───────────── */
 class LocalAdapter {
   kind = 'local';
 
   read() {
-    try {
-      const raw = localStorage.getItem(LS_DATA);
-      if (raw) return { ...emptyState(), ...JSON.parse(raw) };
-    } catch (e) {
-      console.warn('local read failed', e);
-    }
-    return null;
+    const d = readJSON(LS_DATA);
+    return d ? { ...emptyState(), ...d } : null;
   }
 
   start(onChange) {
@@ -41,43 +60,66 @@ class LocalAdapter {
     this.state = existing || emptyState();
     if (!existing) {
       this.state.areas = SEED_AREAS.map((a) => ({ ...a, createdAt: now(), updatedAt: now() }));
-      this.save();
+      this.save.flush();
     }
     this._onStorage = (e) => {
-      if (e.key === LS_DATA) {
-        this.state = this.read() || emptyState();
-        onChange(this.state, { ready: true });
-      }
+      if (e.key === LS_DATA) { this.state = this.read() || emptyState(); onChange(this.state, { ready: true }, true); }
     };
-    window.addEventListener('storage', this._onStorage); // مزامنة بين نوافذ نفس الجهاز
-    onChange(this.state, { ready: true });
+    window.addEventListener('storage', this._onStorage); // مزامنة بين نوافذ نفس الجهاز (مثل الـWidget)
+    onChange(this.state, { ready: true }, true);
   }
 
-  stop() {
-    window.removeEventListener('storage', this._onStorage);
-  }
+  stop() { window.removeEventListener('storage', this._onStorage); this.save.flush(); }
 
-  save() {
-    try {
-      localStorage.setItem(LS_DATA, JSON.stringify(this.state));
-    } catch (e) {
-      console.error('local save failed', e);
-    }
-  }
+  save = debounce(() => writeJSON(LS_DATA, this.state), 150);
 
   put(coll, item) {
-    const list = this.state[coll];
-    const i = list.findIndex((x) => x.id === item.id);
-    if (i >= 0) list[i] = item;
-    else list.push(item);
+    this.state = { ...this.state, [coll]: upsert(this.state[coll], item) };
     this.save();
-    this.onChange(this.state, { ready: true });
+    this.onChange(this.state, { ready: true }, true);
   }
 
   remove(coll, id) {
-    this.state[coll] = this.state[coll].filter((x) => x.id !== id);
+    this.state = { ...this.state, [coll]: this.state[coll].filter((x) => x.id !== id) };
     this.save();
-    this.onChange(this.state, { ready: true });
+    this.onChange(this.state, { ready: true }, true);
+  }
+}
+
+/* ───────────── نسخة الحساب المحفوظة (عرض فوري قبل Firebase) ───────────── */
+class SnapshotAdapter {
+  kind = 'snapshot';
+
+  constructor(uid) { this.uid = uid; }
+
+  start(onChange) {
+    this.onChange = onChange;
+    this.state = { ...emptyState(), ...(readJSON(LS_SNAP + this.uid) || {}) };
+    onChange(this.state, { ready: true, serverConfirmed: false, booting: true }, true);
+  }
+
+  stop() { this.save.flush(); }
+
+  save = debounce(() => writeJSON(LS_SNAP + this.uid, this.state), 150);
+
+  _queue(op) {
+    const q = readJSON(LS_QUEUE + this.uid) || [];
+    q.push(op);
+    writeJSON(LS_QUEUE + this.uid, q);
+  }
+
+  put(coll, item) {
+    this.state = { ...this.state, [coll]: upsert(this.state[coll], item) };
+    this._queue({ op: 'put', coll, item });
+    this.save();
+    this.onChange(this.state, { ready: true, serverConfirmed: false, pending: true, booting: true }, true);
+  }
+
+  remove(coll, id) {
+    this.state = { ...this.state, [coll]: this.state[coll].filter((x) => x.id !== id) };
+    this._queue({ op: 'remove', coll, id });
+    this.save();
+    this.onChange(this.state, { ready: true, serverConfirmed: false, pending: true, booting: true }, true);
   }
 }
 
@@ -96,7 +138,6 @@ class CloudAdapter {
     const app = appMod.initializeApp(firebaseConfig);
     this.auth = authMod.getAuth(app);
     try {
-      // نسخة محلية دائمة: يعمل دون إنترنت ويزامن عند عودة الاتصال
       this.db = fs.initializeFirestore(app, {
         localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
       });
@@ -106,73 +147,96 @@ class CloudAdapter {
     }
   }
 
-  onAuth(cb) {
-    return this.authMod.onAuthStateChanged(this.auth, cb);
-  }
+  onAuth(cb) { return this.authMod.onAuthStateChanged(this.auth, cb); }
+  signIn(email, pass) { return this.authMod.signInWithEmailAndPassword(this.auth, email, pass); }
+  signUp(email, pass) { return this.authMod.createUserWithEmailAndPassword(this.auth, email, pass); }
+  resetPassword(email) { return this.authMod.sendPasswordResetEmail(this.auth, email); }
+  signOut() { return this.authMod.signOut(this.auth); }
+  idToken() { return this.auth.currentUser ? this.auth.currentUser.getIdToken() : Promise.resolve(null); }
 
-  signIn(email, pass) {
-    return this.authMod.signInWithEmailAndPassword(this.auth, email, pass);
-  }
-
-  signUp(email, pass) {
-    return this.authMod.createUserWithEmailAndPassword(this.auth, email, pass);
-  }
-
-  resetPassword(email) {
-    return this.authMod.sendPasswordResetEmail(this.auth, email);
-  }
-
-  signOut() {
-    return this.authMod.signOut(this.auth);
-  }
-
-  start(uid, onChange) {
+  /**
+   * يبدأ من النسخة المحفوظة (لا شاشة فارغة)، ثم يستبدل كل مجموعة عند وصول بياناتها.
+   * التحديثات تُطبَّق تدريجيًا (docChanges) بدل إعادة بناء المجموعة كاملة،
+   * وتغيّرات الحالة فقط (متزامن/يزامن) لا تعيد رسم الشاشة.
+   */
+  start(uid, onChange, seed) {
     const { fs } = this;
     this.uid = uid;
-    this.state = emptyState();
+    this.onChange = onChange;
+    this.state = { ...emptyState(), ...(seed || {}) };
+    // الخرائط تبدأ بالنسخة المحفوظة حتى لا تختفي البيانات لحظة كتابة قبل وصول المجموعة من Firebase
+    this.maps = Object.fromEntries(COLLS.map((c) => [c, new Map(this.state[c].map((x) => [x.id, x]))]));
     const loaded = new Set();
     const fromServer = new Set();
+    const pending = new Set();
+    const status = () => ({
+      ready: true,
+      serverConfirmed: fromServer.size === COLLS.length,
+      pending: pending.size > 0,
+    });
+    this.status = status;
+
     this.unsubs = COLLS.map((c) =>
       fs.onSnapshot(fs.collection(this.db, 'users', uid, c), { includeMetadataChanges: true }, (snap) => {
-        this.state[c] = snap.docs.map((d) => d.data());
-        loaded.add(c);
-        if (!snap.metadata.fromCache) fromServer.add(c);
-        if (loaded.size === COLLS.length) {
-          onChange(this.state, {
-            ready: true,
-            serverConfirmed: fromServer.size === COLLS.length,
-            pending: snap.metadata.hasPendingWrites,
-          });
+        const m = this.maps[c];
+        let changed = false;
+        if (!loaded.has(c)) {
+          m.clear();
+          snap.docs.forEach((d) => m.set(d.id, d.data()));
+          loaded.add(c);
+          changed = true;
+        } else {
+          for (const ch of snap.docChanges()) {
+            if (ch.type === 'removed') m.delete(ch.doc.id);
+            else m.set(ch.doc.id, ch.doc.data());
+            changed = true;
+          }
         }
+        if (!snap.metadata.fromCache) fromServer.add(c);
+        if (snap.metadata.hasPendingWrites) pending.add(c); else pending.delete(c);
+        if (changed) this.state = { ...this.state, [c]: [...m.values()] };
+        onChange(this.state, status(), changed);
+        if (changed) this.saveSnap();
       }, (err) => {
         console.error('snapshot error', err);
-        onChange(this.state, { ready: true, error: err });
+        onChange(this.state, { ...status(), error: err }, false);
       })
     );
   }
 
+  saveSnap = debounce(() => { if (this.uid) writeJSON(LS_SNAP + this.uid, this.state); }, 800);
+
   stop() {
     (this.unsubs || []).forEach((u) => u());
     this.unsubs = [];
+    this.saveSnap.flush();
   }
 
-  ref(coll, id) {
-    return this.fs.doc(this.db, 'users', this.uid, coll, id);
-  }
+  ref(coll, id) { return this.fs.doc(this.db, 'users', this.uid, coll, id); }
 
-  // لا ننتظر الوعد: الكتابة تظهر فورًا محليًا وتُرسل للسحابة عند توفر الاتصال
+  // تحديث فوري في الواجهة، ثم إرسال للسحابة (يعمل دون اتصال ويُرسل عند عودته)
   put(coll, item) {
+    this.maps[coll].set(item.id, item);
+    this.state = { ...this.state, [coll]: [...this.maps[coll].values()] };
+    this.onChange(this.state, { ...this.status(), pending: true }, true);
     this.fs.setDoc(this.ref(coll, item.id), clean(item)).catch((e) => console.error('put failed', e));
   }
 
   remove(coll, id) {
+    this.maps[coll].delete(id);
+    this.state = { ...this.state, [coll]: [...this.maps[coll].values()] };
+    this.onChange(this.state, { ...this.status(), pending: true }, true);
     this.fs.deleteDoc(this.ref(coll, id)).catch((e) => console.error('remove failed', e));
   }
 }
 
+/** بعد أول رسم للشاشة: يعطي المتصفح فرصة لعرض الواجهة قبل العمل الثقيل. */
+const afterPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
 /* ───────────── الواجهة الموحّدة ───────────── */
 export const store = {
   state: emptyState(),
+  rev: 0, // يزيد مع كل تغيير في البيانات — مفتاح لذاكرة المحددات في model.js
   mode: 'local', // local | cloud | cloud-signed-out | cloud-error
   user: null,
   syncConfigured: Boolean(firebaseConfig),
@@ -180,26 +244,22 @@ export const store = {
   listeners: new Set(),
   _seededCloud: false,
 
-  subscribe(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  },
+  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
 
-  emit() {
-    this.listeners.forEach((fn) => fn(this.state, this.status));
-  },
+  emit(dataChanged = true) { this.listeners.forEach((fn) => fn(this.state, this.status, dataChanged)); },
 
-  _attach(adapter, uid) {
-    this.adapter?.stop?.();
+  _attach(adapter, ...args) {
+    if (this.adapter && this.adapter !== adapter) this.adapter.stop?.();
     this.adapter = adapter;
-    const cb = (state, status) => {
+    const cb = (state, status, dataChanged = true) => {
+      if (this.adapter !== adapter) return; // محرّك قديم
       this.state = state;
       this.status = status;
+      if (dataChanged) this.rev++;
       if (adapter.kind === 'cloud' && status.serverConfirmed) this._afterCloudLoad();
-      this.emit();
+      this.emit(dataChanged);
     };
-    if (adapter.kind === 'cloud') adapter.start(uid, cb);
-    else adapter.start(cb);
+    adapter.start(...(adapter.kind === 'cloud' ? [args[0], cb, args[1]] : [cb]));
   },
 
   async boot() {
@@ -209,26 +269,58 @@ export const store = {
       this._attach(this.local);
       return;
     }
+
+    // ١) عرض فوري: آخر حساب على هذا الجهاز ⇒ نسخته المحفوظة، وإلا البيانات المحلية
+    const last = readJSON(LS_LAST);
+    if (last?.uid) {
+      this.user = { uid: last.uid, email: last.email };
+      this.mode = 'cloud';
+      this._attach(new SnapshotAdapter(last.uid));
+    } else {
+      this.mode = 'cloud-signed-out';
+      this._attach(this.local);
+    }
+
+    // ٢) Firebase بعد أول رسم
+    await afterPaint();
     try {
       this.cloud = new CloudAdapter();
       await this.cloud.init();
     } catch (e) {
       console.error('cloud init failed', e);
-      this.mode = 'cloud-error';
-      this._attach(this.local);
+      if (this.mode !== 'cloud') this.mode = 'cloud-error';
+      this.status = { ...this.status, offline: true };
+      this.emit(false);
       return;
     }
     this.cloud.onAuth((user) => {
-      this.user = user;
       this._seededCloud = false;
       if (user) {
+        writeJSON(LS_LAST, { uid: user.uid, email: user.email });
+        this.user = user;
         this.mode = 'cloud';
-        this._attach(this.cloud, user.uid);
+        const seed = this.adapter?.kind === 'snapshot' && this.adapter.uid === user.uid
+          ? this.adapter.state : readJSON(LS_SNAP + user.uid);
+        this._attach(this.cloud, user.uid, seed);
+        this._flushQueue(user.uid);
       } else {
+        try { localStorage.removeItem(LS_LAST); } catch {}
+        this.user = null;
         this.mode = 'cloud-signed-out';
         this._attach(this.local);
       }
     });
+  },
+
+  /** الكتابات التي تمت أثناء العرض الفوري تُرسل الآن بالترتيب. */
+  _flushQueue(uid) {
+    const q = readJSON(LS_QUEUE + uid);
+    if (!q?.length) return;
+    for (const op of q) {
+      if (op.op === 'put') this.cloud.put(op.coll, op.item);
+      else this.cloud.remove(op.coll, op.id);
+    }
+    try { localStorage.removeItem(LS_QUEUE + uid); } catch {}
   },
 
   /** بعد أول تحميل مؤكّد من الخادم: رفع البيانات المحلية مرة واحدة + المجالات الافتراضية. */
@@ -243,7 +335,6 @@ export const store = {
           const remote = new Map(this.state[c].map((x) => [x.id, x]));
           for (const item of local[c] || []) {
             const r = remote.get(item.id);
-            // الأحدث يفوز؛ الموجود في السحابة فقط يبقى كما هو
             if (!r || (item.updatedAt || '') > (r.updatedAt || '')) this.cloud.put(c, item);
           }
         }
@@ -261,9 +352,7 @@ export const store = {
     return stamped;
   },
 
-  remove(coll, id) {
-    this.adapter.remove(coll, id);
-  },
+  remove(coll, id) { this.adapter.remove(coll, id); },
 
   /** استبدال كامل (استيراد نسخة احتياطية). */
   importAll(data) {
@@ -280,6 +369,7 @@ export const store = {
     return out;
   },
 
+  idToken: () => (store.cloud && store.mode === 'cloud' ? store.cloud.idToken() : Promise.resolve(null)),
   signIn: (e, p) => store.cloud.signIn(e, p),
   signUp: (e, p) => store.cloud.signUp(e, p),
   resetPassword: (e) => store.cloud.resetPassword(e),

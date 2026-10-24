@@ -1,26 +1,41 @@
 // المنطق: محددات البيانات والعمليات. لا HTML هنا.
-// حقول أضافها الإصدار ٢ على المهمة (اختيارية — البيانات القديمة تعمل كما هي):
-//   steps[]      خطوات صغيرة داخل المهمة {id, title, done}
-//   repeat       daily | workdays | weekly | monthly | null
-//   assignee     اسم الشخص المُسندة إليه
-//   assignedAt   تاريخ الإسناد (YYYY-MM-DD)
-//   followUp     موعد المتابعة القادم (YYYY-MM-DD)
-//   nextId       معرّف النسخة التالية التي أنشأها التكرار
-// لا مجموعات جديدة في Firestore: كل شيء داخل areas / goals / tasks / reviews.
+//
+// حقول المهمة (كلها اختيارية — البيانات القديمة تعمل كما هي):
+//   steps[] {id,title,done}    خطوات صغيرة
+//   repeat                      daily | workdays | weekly | monthly | null
+//   assignee/assignedAt/followUp  الإسناد والمتابعة
+//   nextId                      النسخة التالية التي أنشأها التكرار
+//   time       'HH:MM'          وقت الموعد (اختياري)
+//   remind     null | 0 | 15 | 60 | 'morning'   التذكير: عند الموعد / قبله بدقائق / صباح يوم الموعد
+//   intent     نص                «متى وأين سأبدأ؟» — يظهر في التنبيه نفسه (نية التنفيذ)
+//   est        دقائق              تقدير الوقت — يُستخدم لحساب حِمل اليوم
+//   snoozes / snoozeUntil       التأجيل من التنبيه (يُعدّ ويظهر)
+// الإعدادات المتزامنة بين الأجهزة: مستند reviews/_settings (بلا مجموعة جديدة في Firestore).
 
 import { store } from './store.js';
-import { uid, todayKey, keyAdd, daysBetween, quadrant, QUADRANT_ORDER, nextOccurrence } from './utils.js';
+import { uid, todayKey, keyAdd, daysBetween, parseKey, quadrant, QUADRANT_ORDER, nextOccurrence } from './utils.js';
 
 export const MAX_FOCUS = 3;
 export const S = () => store.state;
 
+/* ───────── ذاكرة المحددات: تُحسب مرة لكل تغيير في البيانات أو اليوم ───────── */
+let memoKey = '';
+let memo = new Map();
+function M(key, fn) {
+  const k = `${store.rev}|${todayKey()}`;
+  if (k !== memoKey) { memoKey = k; memo = new Map(); }
+  if (!memo.has(key)) memo.set(key, fn());
+  return memo.get(key);
+}
+const index = (coll) => M(`idx:${coll}`, () => new Map(S()[coll].map((x) => [x.id, x])));
+
 /* ───────── محددات ───────── */
-export const areas = () => [...S().areas].sort((a, b) => (a.order || 0) - (b.order || 0));
-export const areaById = (id) => S().areas.find((a) => a.id === id);
-export const goalById = (id) => S().goals.find((g) => g.id === id);
-export const taskById = (id) => S().tasks.find((t) => t.id === id);
+export const areas = () => M('areas', () => [...S().areas].sort((a, b) => (a.order || 0) - (b.order || 0)));
+export const areaById = (id) => (id ? index('areas').get(id) : undefined);
+export const goalById = (id) => (id ? index('goals').get(id) : undefined);
+export const taskById = (id) => (id ? index('tasks').get(id) : undefined);
 export const isOpen = (t) => t.status !== 'done';
-export const openTasks = () => S().tasks.filter(isOpen);
+export const openTasks = () => M('open', () => S().tasks.filter(isOpen));
 export const isOverdue = (t) => !!t.due && isOpen(t) && t.due < todayKey();
 export const isFocus = (t) => t.focusDate === todayKey();
 export const hasArea = (t) => !!t.areaId && !!areaById(t.areaId);
@@ -28,25 +43,23 @@ export const hasArea = (t) => !!t.areaId && !!areaById(t.areaId);
 export const byPriority = (a, b) =>
   QUADRANT_ORDER.indexOf(quadrant(a)) - QUADRANT_ORDER.indexOf(quadrant(b)) ||
   (a.due || '9999').localeCompare(b.due || '9999') ||
+  (a.time || '99').localeCompare(b.time || '99') ||
   (a.createdAt || '').localeCompare(b.createdAt || '');
 
-export const focusToday = () =>
-  S().tasks.filter(isFocus).sort((a, b) => (a.focusOrder || 0) - (b.focusOrder || 0));
+export const focusToday = () => M('focus', () =>
+  S().tasks.filter(isFocus).sort((a, b) => (a.focusOrder || 0) - (b.focusOrder || 0)));
 
-/** متابعة مستحقة لمهمة مُسندة. */
 export const followDue = (t) => isOpen(t) && !!t.assignee && !!t.followUp && t.followUp <= todayKey();
 
-/** «أيضًا اليوم»: المستحق اليوم أو المتأخر، والمتابعات المستحقة — خارج الثلاثة. */
-export const alsoToday = () =>
+export const alsoToday = () => M('also', () =>
   openTasks()
     .filter((t) => !isFocus(t) && ((t.due && t.due <= todayKey()) || followDue(t)))
-    .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || byPriority(a, b));
+    .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || (a.time || '99').localeCompare(b.time || '99') || byPriority(a, b)));
 
-export const doneToday = () =>
+export const doneToday = () => M('doneToday', () =>
   S().tasks.filter((t) => !isOpen(t) && (t.completedAt || '').slice(0, 10) === todayKey())
-    .sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));
+    .sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || '')));
 
-/** درجة الترشيح لليوم: الربع + الموعد + الترحيل + الارتباط بهدف. */
 export function score(t) {
   const w = { q1: 40, q2: 30, q3: 14, q4: 4 }[quadrant(t)];
   let s = w;
@@ -54,38 +67,71 @@ export function score(t) {
     const d = daysBetween(todayKey(), t.due);
     s += d < 0 ? 26 : d === 0 ? 22 : d <= 3 ? 10 : 0;
   }
-  s += Math.min(t.slips || 0, 4) * 5;
+  s += Math.min(t.slips || 0, 4) * 5 + Math.min(t.snoozes || 0, 3) * 3;
   if (t.goalId && goalById(t.goalId)) s += 8;
-  if (t.assignee) s -= 18; // ما عند الآخرين ليس عملك اليوم
+  if (t.assignee) s -= 18;
+  if (t.est && t.est <= 15) s += 3; // البداية السهلة تكسر الجمود
   return s;
 }
 
-export const suggestions = (limit = 5) =>
-  openTasks().filter((t) => !isFocus(t)).sort((a, b) => score(b) - score(a) || byPriority(a, b)).slice(0, limit);
+export const suggestions = (limit = 5) => M(`sug:${limit}`, () =>
+  openTasks().filter((t) => !isFocus(t)).sort((a, b) => score(b) - score(a) || byPriority(a, b)).slice(0, limit));
 
-export const goalTasks = (g) => S().tasks.filter((t) => t.goalId === g.id);
+export const goalTasks = (g) => M(`gt:${g.id}`, () => S().tasks.filter((t) => t.goalId === g.id));
 export function goalProgress(g) {
   const ts = goalTasks(g);
   const done = ts.filter((t) => !isOpen(t)).length;
   return { done, total: ts.length, pct: ts.length ? Math.round((done / ts.length) * 100) : 0 };
 }
 
-export const people = () => {
+export const people = () => M('people', () => {
   const m = new Map();
   for (const t of S().tasks) if (t.assignee) m.set(t.assignee, (m.get(t.assignee) || 0) + (isOpen(t) ? 1 : 0));
   return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([name, open]) => ({ name, open }));
-};
+});
 
-/** أيام متتالية أُنجزت فيها مهمة واحدة على الأقل من أولويات اليوم. */
-export function streak() {
+export const streak = () => M('streak', () => {
   const days = new Set(S().tasks.filter((t) => !isOpen(t) && t.focusDate).map((t) => t.focusDate));
   let k = days.has(todayKey()) ? todayKey() : keyAdd(todayKey(), -1);
   let c = 0;
   while (days.has(k)) { c++; k = keyAdd(k, -1); }
   return c;
-}
+});
 
-/* ───────── القوائم الذكية (مثل To Do) ───────── */
+/* ───────── الإعدادات المتزامنة ───────── */
+export const SETTINGS_ID = '_settings';
+export const DEFAULT_SETTINGS = { name: '', morning: '08:30', evening: '17:30', capacity: 6 };
+export const settings = () => M('settings', () => ({ ...DEFAULT_SETTINGS, ...(S().reviews.find((r) => r.id === SETTINGS_ID) || {}) }));
+export function saveSettings(patch) {
+  const cur = S().reviews.find((r) => r.id === SETTINGS_ID) || { id: SETTINGS_ID };
+  return store.put('reviews', { ...cur, ...patch, id: SETTINGS_ID });
+}
+export const isReviewDoc = (r) => /^\d{4}-\d{2}-\d{2}$/.test(r.id);
+
+/* ───────── الحِمل والاتزان ───────── */
+/** مهام كل يوم (المفتوحة): العدد والدقائق المقدّرة — للتقويم وحِمل اليوم. */
+export const dayLoads = () => M('loads', () => {
+  const m = new Map();
+  for (const t of openTasks()) {
+    if (!t.due) continue;
+    const d = m.get(t.due) || { count: 0, minutes: 0, unknown: 0 };
+    d.count++;
+    if (t.est) d.minutes += t.est; else d.unknown++;
+    m.set(t.due, d);
+  }
+  return m;
+});
+
+/** حِمل اليوم: الثلاث + المستحق اليوم، مقابل ساعات التركيز المتاحة. */
+export const todayLoad = () => M('todayLoad', () => {
+  const list = [...focusToday().filter(isOpen), ...alsoToday().filter((t) => !t.assignee)];
+  const minutes = list.reduce((s, t) => s + (t.est || 0), 0);
+  const unknown = list.filter((t) => !t.est).length;
+  const cap = (Number(settings().capacity) || 6) * 60;
+  return { minutes, unknown, cap, pct: Math.min(100, Math.round((minutes / cap) * 100)), over: minutes > cap };
+});
+
+/* ───────── القوائم الذكية ───────── */
 export const SMART = {
   important: { name: 'هام', icon: 'star', filter: (t) => !!t.important },
   planned: { name: 'مخطط', icon: 'cal', filter: (t) => !!t.due },
@@ -93,18 +139,18 @@ export const SMART = {
   inbox: { name: 'الوارد', icon: 'inbox', filter: (t) => !hasArea(t) },
 };
 
-export const listTasks = (key) => {
+export const listTasks = (key) => M(`list:${key}`, () => {
   if (SMART[key]) return S().tasks.filter(SMART[key].filter);
   return S().tasks.filter((t) => t.areaId === key);
-};
+});
 
-export const counts = () => {
-  const open = openTasks();
+export const counts = () => M('counts', () => {
   const c = { today: focusToday().filter(isOpen).length + alsoToday().length };
+  const open = openTasks();
   for (const k of Object.keys(SMART)) c[k] = open.filter(SMART[k].filter).length;
-  for (const a of S().areas) c[a.id] = open.filter((t) => t.areaId === a.id).length;
+  for (const t of open) if (t.areaId) c[t.areaId] = (c[t.areaId] || 0) + 1;
   return c;
-};
+});
 
 /* ───────── عمليات ───────── */
 export function createTask(fields) {
@@ -113,6 +159,7 @@ export function createTask(fields) {
     urgent: false, important: false, due: null, status: 'todo',
     focusDate: null, focusOrder: 0, slips: 0, completedAt: null,
     steps: [], repeat: null, assignee: null, assignedAt: null, followUp: null,
+    time: null, remind: null, intent: '', est: null, snoozes: 0, snoozeUntil: null,
     ...fields,
   });
 }
@@ -129,10 +176,13 @@ export function updateTask(id, patch) {
     }
     if (!a) { patch.assignedAt = null; patch.followUp = null; }
   }
+  // تغيير الموعد أو التذكير يلغي أي تأجيل سابق من التنبيه
+  if (('due' in patch && patch.due !== t.due) || ('time' in patch && patch.time !== t.time) || ('remind' in patch && patch.remind !== t.remind)) {
+    patch.snoozeUntil = null;
+  }
   return store.put('tasks', { ...t, ...patch });
 }
 
-/** إنجاز/إلغاء إنجاز. المتكررة تولّد نسختها التالية مرة واحدة. يُرجع رسالة للمستخدم أو null. */
 export function toggleTask(id) {
   const t = taskById(id);
   if (!t) return null;
@@ -146,6 +196,7 @@ export function toggleTask(id) {
     const copy = createTask({
       title: t.title, notes: t.notes, areaId: t.areaId, goalId: t.goalId,
       important: t.important, urgent: t.urgent, repeat: t.repeat, due: next,
+      time: t.time || null, remind: t.remind ?? null, intent: t.intent || '', est: t.est || null,
       assignee: t.assignee, assignedAt: t.assignee ? todayKey() : null,
       followUp: t.assignee ? next : null,
       steps: (t.steps || []).map((s) => ({ ...s, id: uid(), done: false })),
@@ -154,7 +205,7 @@ export function toggleTask(id) {
   }
   if (!done && t.nextId) {
     const nx = taskById(t.nextId);
-    if (nx && isOpen(nx) && !nx.focusDate) store.remove('tasks', nx.id); // تراجع نظيف
+    if (nx && isOpen(nx) && !nx.focusDate) store.remove('tasks', nx.id);
     patch.nextId = null;
   }
   updateTask(id, patch);
@@ -169,7 +220,6 @@ export function toggleTask(id) {
 
 export const FULL_MSG = 'أولويات اليوم ثلاث فقط. أنجز واحدة أو أعدها للقائمة أولًا.';
 
-/** يُرجع حقول التركيز (أو null إن امتلأت الثلاث). */
 export function focusPatch() {
   if (focusToday().length >= MAX_FOCUS) return null;
   return { focusDate: todayKey(), focusOrder: Date.now() };
@@ -182,12 +232,23 @@ export function rollover() {
   return stale.length;
 }
 
-export function followedUp(id, days = 3) {
-  updateTask(id, { followUp: keyAdd(todayKey(), days) });
+export function followedUp(id, days = 3) { updateTask(id, { followUp: keyAdd(todayKey(), days) }); }
+
+/** تأجيل من التنبيه: دقائق، أو «غدًا». يُعدّ كل تأجيل. */
+export function snooze(id, how) {
+  const t = taskById(id);
+  if (!t) return null;
+  const snoozes = (t.snoozes || 0) + 1;
+  if (how === 'tomorrow') {
+    updateTask(id, { due: keyAdd(todayKey(), 1), snoozes, focusDate: isFocus(t) ? null : t.focusDate });
+    return 'نُقلت إلى الغد.';
+  }
+  const ms = Number(how) * 60_000;
+  store.put('tasks', { ...t, snoozeUntil: new Date(Date.now() + ms).toISOString(), snoozes });
+  return `سأذكّرك بعد ${how >= 60 ? 'ساعة' : `${how} دقيقة`}.`;
 }
 
-/* ───────── الإضافة السريعة: رموز داخل النص ─────────
-   !  مهم     !!  مهم وعاجل     @اسم  إسناد (الشرطة السفلية = مسافة)     #مجال  أول مجال يبدأ بالنص */
+/* ───────── الإضافة السريعة: رموز داخل النص ───────── */
 export function parseQuick(text) {
   const out = { title: text, important: false, urgent: false, assignee: null, areaId: null, tokens: [] };
   let s = ` ${text} `;
@@ -201,7 +262,7 @@ export function parseQuick(text) {
     const a = areas().find((x) => x.name.startsWith(key)) || areas().find((x) => x.name.includes(key));
     if (!a) return m;
     out.areaId = a.id;
-    out.tokens.push({ k: 'area', v: a.name, color: a.color });
+    out.tokens.push({ k: 'area', v: a.name, color: a.color, emoji: a.emoji });
     return ' ';
   });
   s = s.replace(/\s(!!|!)(?=\s)/g, (_, b) => {
@@ -214,7 +275,85 @@ export function parseQuick(text) {
   return out;
 }
 
-/* ───────── استيراد ملف الإعداد القديم (الإصدار السابق المقترح) — دمج لا استبدال ───────── */
+/* ───────── جدول التنبيهات ─────────
+   يُبنى من البيانات الحالية ويُرسل لخادم التنبيهات (أو يُجدول محليًا والتطبيق مفتوح).
+   كل عنصر: {key, at(ms), title, body, url, kind}. المفتاح ثابت ⇒ لا تكرار للتنبيه نفسه. */
+const atMs = (dateKey, hhmm) => {
+  const d = parseKey(dateKey);
+  const [h, m] = (hhmm || '09:00').split(':').map(Number);
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+};
+export const taskFireAt = (t) => {
+  if (!t.due || t.remind == null || t.remind === '') return null;
+  const s = settings();
+  if (t.remind === 'morning') return atMs(t.due, s.morning || '08:30');
+  return atMs(t.due, t.time || '09:00') - Number(t.remind) * 60_000;
+};
+
+export function buildSchedule(nowMs = Date.now()) {
+  const out = [];
+  const horizon = nowMs + 21 * 864e5;
+  const s = settings();
+  const ok = (at) => at > nowMs - 60_000 && at < horizon;
+
+  for (const t of openTasks()) {
+    let at = taskFireAt(t);
+    if (at != null) {
+      const sn = t.snoozeUntil ? Date.parse(t.snoozeUntil) : 0;
+      if (sn > at) at = sn;
+      if (ok(at)) {
+        const step = (t.steps || []).find((x) => !x.done);
+        const body = t.snoozes >= 2
+          ? `أجّلتها ${t.snoozes} مرات. صغّرها إلى خطوة واحدة الآن، أو أسندها.`
+          : t.intent ? `قلت لنفسك: ${t.intent}` : step ? `ابدأ بـ: ${step.title}` : t.time ? `موعدها ${t.time}` : 'خمس دقائق تكفي للبدء.';
+        out.push({ key: `t:${t.id}`, at, title: t.title, body, url: `#/task/${t.id}`, kind: 'task' });
+        // تذكير ثانٍ بعد نصف ساعة: يُلغى تلقائيًا إن أُنجزت (يُعاد بناء الجدول عند كل تغيير)
+        out.push({
+          key: `n:${t.id}`, at: at + 30 * 60_000, title: `ما زالت تنتظرك: ${t.title}`,
+          body: step ? `خطوة واحدة صغيرة: ${step.title}` : 'ابدأ خمس دقائق فقط، والباقي يأتي.', url: `#/task/${t.id}`, kind: 'task',
+        });
+      }
+    }
+    if (t.assignee && t.followUp) {
+      const fa = atMs(t.followUp, '10:00');
+      if (ok(fa)) out.push({ key: `f:${t.id}:${t.followUp}`, at: fa, title: `تابع مع ${t.assignee}`, body: t.title, url: `#/task/${t.id}`, kind: 'follow' });
+    }
+  }
+
+  const today = todayKey();
+  for (let i = 0; i < 7; i++) {
+    const day = keyAdd(today, i);
+    const dueCount = openTasks().filter((t) => t.due === day).length;
+    if (s.morning) {
+      const at = atMs(day, s.morning);
+      if (ok(at)) {
+        const focus = i === 0 ? focusToday().filter(isOpen) : [];
+        out.push({
+          key: `m:${day}`, at, kind: 'brief', url: '#/today',
+          title: 'صباح الخير. ما الثلاث لهذا اليوم؟',
+          body: focus.length ? focus.map((t, j) => `${j + 1}. ${t.title}`).join('\n')
+            : dueCount ? `لديك ${dueCount} مستحقة. اختر ثلاثًا في دقيقتين.` : 'اختر ثلاثًا فقط، وابدأ بالأصعب.',
+        });
+      }
+    }
+    if (s.evening) {
+      const at = atMs(day, s.evening);
+      if (ok(at)) {
+        const f = i === 0 ? focusToday() : [];
+        const d = f.filter((t) => !isOpen(t)).length;
+        out.push({
+          key: `e:${day}`, at, kind: 'close', url: '#/today',
+          title: 'أغلق يومك',
+          body: f.length ? `أنجزت ${d} من ${f.length}. قرّر مصير الباقي واختر أولى الغد.` : 'دقيقتان: ما الذي أنجزته؟ وما أهم شيء غدًا؟',
+        });
+      }
+    }
+  }
+  return out.sort((a, b) => a.at - b.at).slice(0, 200);
+}
+
+/* ───────── استيراد ملف الإعداد القديم — دمج لا استبدال ───────── */
 export function convertSetupFile(data, areaMap) {
   const pri = { 4: { important: true, urgent: true }, 3: { important: true, urgent: false }, 2: { important: true, urgent: false }, 1: { important: false, urgent: false } };
   const goals = (data.projects || []).map((p) => ({
@@ -231,14 +370,14 @@ export function convertSetupFile(data, areaMap) {
       ...(pri[t.priority] || pri[2]), due: t.due || null, status: t.status === 'done' ? 'done' : 'todo',
       completedAt: t.completedAt || null, focusDate: null, focusOrder: 0, slips: 0,
       steps: t.nextStep ? [{ id: uid(), title: t.nextStep, done: false }] : [],
-      repeat: null, assignee: null, assignedAt: null, followUp: null, createdAt: t.createdAt,
+      repeat: null, assignee: null, assignedAt: null, followUp: null, est: t.est || null, createdAt: t.createdAt,
     };
   });
   goals.forEach((g) => { g.areaId = goalArea[g.id.slice(3)] || null; });
   const series = (data.series || []).filter((s) => s.active !== false).map((s) => {
     let due = todayKey();
     for (let i = 0; i < 40; i++) {
-      const d = new Date(`${due}T00:00:00`);
+      const d = parseKey(due);
       const ok = s.freq === 'monthly' ? d.getDate() === Math.min(s.monthDay || 1, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())
         : s.freq === 'weekly' ? (s.weekdays || []).includes(d.getDay()) : true;
       if (ok) break;
@@ -248,7 +387,7 @@ export function convertSetupFile(data, areaMap) {
       id: `v3-${s.id}`, title: s.title, notes: '', areaId: areaMap[s.domainId] || null, goalId: s.projectId ? `v3-${s.projectId}` : null,
       ...(pri[s.priority] || pri[2]), due, status: 'todo', completedAt: null, focusDate: null, focusOrder: 0, slips: 0,
       steps: [], repeat: s.freq === 'monthly' ? 'monthly' : s.freq === 'daily' ? 'daily' : 'weekly',
-      assignee: null, assignedAt: null, followUp: null,
+      assignee: null, assignedAt: null, followUp: null, est: s.est || null,
     };
   });
   return { goals, tasks: [...tasks, ...series] };

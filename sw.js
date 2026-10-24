@@ -1,27 +1,27 @@
-// Service Worker: يجعل التطبيق يفتح ويعمل دون إنترنت، ويصل التحديث للأجهزة بشكل موثوق.
+// Service Worker: فتح فوري ودون إنترنت، تحديث موثوق، واستقبال التنبيهات.
 //
 // آلية التحديث:
 //  1) كل نشر جديد يرفع VERSION ⇒ يتغيّر sw.js ⇒ يكتشفه المتصفح (يُفحص عند كل فتح وعودة للتطبيق).
-//  2) الإصدار الجديد يُنزّل كل الملفات دفعة واحدة في ذاكرة جديدة، متجاوزًا ذاكرة HTTP
-//     (GitHub Pages يطلب من المتصفح حفظ الملفات ١٠ دقائق — بدون هذا قد تختلط ملفات قديمة بجديدة).
-//  3) بعد اكتماله يتولّى فورًا، والصفحة تعيد تحميل نفسها مرة واحدة ⇒ تظهر النسخة الجديدة كاملة.
+//  2) الإصدار الجديد يُنزّل كل الملفات دفعة واحدة في ذاكرة جديدة، متجاوزًا ذاكرة HTTP.
+//  3) بعد اكتماله يتولّى فورًا، والصفحة تعيد تحميل نفسها مرة واحدة.
 //
-// القراءة: ملفات التطبيق من ذاكرة الإصدار الحالي (متّسقة ولا تختلط)، وإن لم توجد فمن الشبكة.
-// مكتبة Firebase والخطوط (روابط بإصدار ثابت): من الذاكرة أولًا لتعمل المزامنة دون اتصال.
+// القراءة: ملفات التطبيق والخط من ذاكرة الإصدار الحالي (فتح فوري دون شبكة)، وإن لم توجد فمن الشبكة.
+// مكتبة Firebase (روابط بإصدار ثابت): من الذاكرة أولًا.
 //
 // ⚠️ عند أي تعديل على ملفات التطبيق: ارفع رقم VERSION — وإلا لن يصل التعديل للأجهزة المثبّت عليها.
 
-const VERSION = 'cc-v3';
+const VERSION = 'cc-v4';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
-  './icons/icon.svg', './icons/icon-192.png', './icons/apple-touch-icon.png',
+  './js/picker.js', './js/notify.js',
+  './fonts/readex-ar.woff2', './fonts/readex-latin.woff2',
+  './icons/icon.svg', './icons/icon-192.png', './icons/apple-touch-icon.png', './icons/badge-96.png',
 ];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(VERSION)
-      // cache: 'reload' = من الخادم مباشرة، لا من ذاكرة المتصفح
       .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
@@ -63,9 +63,7 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  const isLib = url.hostname === 'www.gstatic.com' && url.pathname.startsWith('/firebasejs/');
-  const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
-  if (isLib || isFont) {
+  if (url.hostname === 'www.gstatic.com' && url.pathname.startsWith('/firebasejs/')) {
     e.respondWith(
       caches.open('cc-libs').then(async (cache) => {
         const cached = await cache.match(req);
@@ -76,4 +74,37 @@ self.addEventListener('fetch', (e) => {
       })
     );
   }
+});
+
+/* ───────── التنبيهات ───────── */
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'مركز القيادة', body: e.data?.text() || '' }; }
+  const task = d.kind === 'task';
+  e.waitUntil(self.registration.showNotification(d.title || 'مركز القيادة', {
+    body: d.body || '',
+    tag: d.tag || d.url || 'cc',
+    renotify: true,
+    requireInteraction: task,
+    icon: 'icons/icon-192.png',
+    badge: 'icons/badge-96.png',
+    data: { url: d.url || '#/today' },
+    actions: task ? [{ action: 'start', title: 'ابدأ الآن' }, { action: 'snooze', title: 'أجّل 15 دقيقة' }] : [],
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  let hash = e.notification.data?.url || '#/today';
+  if (e.action && hash.startsWith('#/task/')) hash += `?a=${e.action}`;
+  const target = new URL(`./${hash}`, self.registration.scope).href;
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const win = all.find((c) => c.url.startsWith(self.registration.scope)) || all[0];
+    if (win) {
+      win.postMessage({ type: 'nav', hash });
+      return win.focus();
+    }
+    return self.clients.openWindow(target);
+  })());
 });

@@ -26,3 +26,7 @@ export const firebaseConfig = {
   appId: '...',
 };
 */
+
+// خادم التنبيهات (Cloudflare Worker مجاني) — يرسل التنبيهات للجوال واللابتوب حتى والتطبيق مغلق.
+// اتركه null ⇒ التنبيهات تعمل فقط والتطبيق مفتوح. خطوات التفعيل في worker/README.md.
+export const pushConfig = { url: null };
