@@ -10,7 +10,7 @@
 //
 // ⚠️ عند أي تعديل على ملفات التطبيق: ارفع رقم VERSION — وإلا لن يصل التعديل للأجهزة المثبّت عليها.
 
-const VERSION = 'cc-v9';
+const VERSION = 'cc-v10';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
