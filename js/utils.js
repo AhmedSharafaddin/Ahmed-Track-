@@ -62,7 +62,7 @@ export const QUADRANTS = {
 export const QUADRANT_ORDER = ['q1', 'q2', 'q3', 'q4'];
 
 /** ألوان المجالات: نفس الإضاءة والتشبّع بدرجات لونية مختلفة (OKLCH) ⇒ متناسقة في الوضعين. */
-export const AREA_COLORS = ['#2f9474', '#a2782d', '#6e7abf', '#b6675a', '#2b8bb3', '#728b41', '#986cab', '#b06e3e', '#009394', '#b3647e'];
+export const AREA_COLORS = ['#2f9474', '#986cab', '#a2782d', '#2b8bb3', '#b6675a', '#6e7abf', '#728b41', '#b3647e', '#b06e3e', '#009394'];
 
 /* ───────── إضافات الإصدار 2 ───────── */
 export const keyAdd = (k, days) => dateKey(addDays(parseKey(k), days));

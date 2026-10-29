@@ -62,7 +62,7 @@ function paint() {
   if (here !== last.route) {
     last.route = here;
     document.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));
-    const tabFor = { today: 'today', matrix: 'matrix', goals: 'goals', review: 'review' }[ui.route] || 'lists';
+    const tabFor = { today: 'today', matrix: 'matrix', goals: 'goals', dashboard: 'dashboard', review: 'dashboard' }[ui.route] || 'lists';
     document.querySelectorAll('.tabbar a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === tabFor ? 'page' : 'false'));
   } else {
     navEl.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));

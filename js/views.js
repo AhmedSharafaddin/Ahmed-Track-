@@ -12,6 +12,7 @@ import {
   settings, todayLoad, isReviewDoc, taskFireAt,
 } from './model.js';
 import { notify } from './notify.js';
+import { vDash } from './dash.js';
 
 export const ui = {
   route: 'today', param: null, sel: null, q: '', weekOffset: 0, drafts: {},
@@ -339,7 +340,7 @@ export function navItems() {
       ...Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)),
     ].join(''),
     views: [
-      item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('chart', 'd'), 'المراجعة', 0),
+      item('#/dashboard', I('chart', 'd'), 'لوحة القيادة', 0), item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
     ].join(''),
     lists: areas().map((a) => `<a href="#/area/${a.id}" class="ni" data-nav="#/area/${a.id}">${areaMark(a, 'sm')}<span>${esc(a.name)}</span>${c[a.id] ? `<em>${n(c[a.id])}</em>` : ''}</a>`).join(''),
   };
@@ -478,7 +479,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: vGoals, review: vReview,
-  lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */
