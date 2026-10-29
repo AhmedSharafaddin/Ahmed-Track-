@@ -738,7 +738,7 @@ function downloadIcs(t) {
 }
 
 function setTheme(v) {
-  const th = v === 'green' ? 'green' : 'exec';
+  const th = ['green', 'exec'].includes(v) ? v : 'dar';
   env.theme = th;
   document.documentElement.dataset.theme = th;
   try { localStorage.setItem('cc:theme', th); } catch {}

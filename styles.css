@@ -859,3 +859,86 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
   .view { max-width: none !important; padding: 0 !important; }
   .minutes h2 { color: #000; }
 }
+
+/* ───────── ثيم «طين وبحر» (افتراضي) ─────────
+   الفكرة: رمل دافئ للمحتوى (الطين)، وتركواز بحري عميق للشريط الجانبي والأزرار، وتيراكوتا للعاجل،
+   وذهب خافت للتفاصيل الصغيرة فقط. يُبدَّل من الإعدادات ← المظهر، ويُحفظ في cc:theme.
+   كل ألوان النص على الخلفيات ≥ 4.5:1. */
+:root[data-theme="dar"] {
+  --bg: #f2eadc;
+  --side: #0b4549;
+  --surface: #fcf9f3;
+  --surface-2: #f6efe2;
+  --hover: #eadfcb;
+  --ink: #1a2a2c;
+  --ink-2: #33474a;
+  --muted: #566768;
+  --faint: #8a9894;
+  --line: #ddd1ba;
+  --line-2: #cbbea3;
+  --accent: #0e5a5f;
+  --accent-soft: #d9e7e2;
+  --on-accent: #ffffff;
+  --gold: #84601e;
+  --gold-soft: #f1e5c7;
+  --q1: #b4492b;
+  --q2: #0e5a5f;
+  --q3: #98681a;
+  --q4: #727970;
+  --danger: #a93a26;
+  --shadow: 0 1px 2px rgba(60, 40, 15, .05), 0 6px 18px rgba(60, 40, 15, .06);
+  --shadow-2: 0 2px 4px rgba(60, 40, 15, .06), 0 14px 32px rgba(60, 40, 15, .10);
+  --shadow-lg: 0 24px 60px rgba(8, 40, 44, .30);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="dar"] {
+    --bg: #0b1517;
+    --side: #08272a;
+    --surface: #132123;
+    --surface-2: #182a2c;
+    --hover: #203537;
+    --ink: #ece6d8;
+    --ink-2: #cbc6b8;
+    --muted: #9aa9a5;
+    --faint: #6b7b78;
+    --line: #20332f;
+    --line-2: #2c4340;
+    --accent: #62bdb4;
+    --accent-soft: #123231;
+    --on-accent: #04100f;
+    --gold: #d9b36a;
+    --gold-soft: #2c2615;
+    --q1: #ea8a68;
+    --q2: #62bdb4;
+    --q3: #d9b36a;
+    --q4: #88958f;
+    --danger: #ee8574;
+  }
+}
+
+/* لمسة الفخامة: توهّج بحري خافت أعلى الصفحة، وشريط جانبي بحري عميق بنص فاتح */
+:root[data-theme="dar"] body {
+  background: radial-gradient(900px 420px at 88% -8%, color-mix(in oklab, var(--accent) 10%, transparent), transparent 70%), var(--bg);
+  background-attachment: fixed;
+}
+:root[data-theme="dar"] .side {
+  --ink: #f1ebdc; --ink-2: #d9d3c3; --muted: #a9bab6; --faint: #7d908c;
+  --hover: rgba(255, 255, 255, .07); --surface: rgba(255, 255, 255, .10); --surface-2: rgba(255, 255, 255, .06);
+  --line: rgba(255, 255, 255, .12); --line-2: rgba(255, 255, 255, .20);
+  --accent: #7fd3c6; --accent-soft: rgba(127, 211, 198, .14); --on-accent: #062a2c;
+  --gold: #e0bd78; --danger: #cf4b33; --shadow: none;
+  background: linear-gradient(180deg, #0d4e52 0%, #08373b 100%);
+  color: var(--ink); border-inline-end: 0;
+}
+:root[data-theme="dar"] .side .ni[aria-current="page"] { background: rgba(255, 255, 255, .11); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+:root[data-theme="dar"] .side .search { background: rgba(255, 255, 255, .08); }
+:root[data-theme="dar"] .side .search input::placeholder { color: var(--muted); }
+:root[data-theme="dar"] .side .btn.primary { background: #e0bd78; border-color: #e0bd78; color: #2a1d06; }
+
+/* أزرار وبطاقات أكثر نعومة */
+:root[data-theme="dar"] .btn.primary { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 88%, #fff), var(--accent)); box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 4px 12px color-mix(in oklab, var(--accent) 32%, transparent); }
+:root[data-theme="dar"] .fab { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 86%, #fff), var(--accent)); }
+:root[data-theme="dar"] .panel { border-radius: 18px; }
+:root[data-theme="dar"] .vh h1 { letter-spacing: -.02em; }
+:root[data-theme="dar"] .vh-i { border-radius: 16px; }
+:root[data-theme="dar"] .tabbar { background: color-mix(in oklab, var(--surface) 92%, transparent); backdrop-filter: blur(14px); }
