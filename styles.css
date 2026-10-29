@@ -806,3 +806,56 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
 .st.done { color: var(--muted); }
 .m-wait { color: var(--q3); font-weight: 500; }
 .prow.wait { color: var(--q3); }
+
+/* ───────── الصوت والاجتماعات والمحضر ───────── */
+.qa-mic { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; transition: background .12s, color .12s; }
+.qa-mic:hover { background: var(--accent-soft); color: var(--accent); }
+.qa-mic .ic { width: 21px; height: 21px; }
+.dlg:has(.voice) { width: min(620px, calc(100vw - 24px)); overflow-x: hidden; }
+.voice { min-width: 0; }
+.vi-grid .in, .mact .in, .vitem .in { min-width: 0; width: 100%; }
+.vitem .fld { min-width: 0; }
+.rec { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 22px 0 8px; }
+.rec b { font-size: 2.4rem; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.rec-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent); }
+@media (prefers-reduced-motion: no-preference) { .rec-dot { animation: recpulse 1.4s infinite; } .spin { animation: spin .9s linear infinite; } }
+@keyframes recpulse { 70% { box-shadow: 0 0 0 12px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.rec-sub { text-align: center; max-width: 46ch; margin: 0 auto 16px; }
+.rec-acts { justify-content: center; }
+.busy { display: grid; justify-items: center; gap: 14px; padding: 34px 10px; text-align: center; }
+.spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line-2); border-top-color: var(--accent); }
+.heard { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: .9rem; color: var(--ink-2); margin-bottom: 12px; }
+.heard span { color: var(--muted); font-size: .8rem; display: block; margin-bottom: 2px; }
+.vitem { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 0 0 10px; display: grid; gap: 10px; background: var(--surface); }
+.vi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.vi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.vi-grid .in { width: 100%; }
+.vitem:not(.is-meet) .m-only { display: none; }
+.vitem .seg button .ic { width: 15px; height: 15px; margin-inline-end: 4px; vertical-align: -3px; }
+.m-meet { color: var(--accent); font-weight: 500; }
+.mreview .fld textarea { width: 100%; }
+.mact { display: grid; grid-template-columns: auto minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 6px; align-items: center; margin-top: 6px; }
+@media (max-width: 560px) { .mact { grid-template-columns: auto 1fr; } .mact .in[name=owner], .mact .in[name=due] { grid-column: 2; } .vi-grid { grid-template-columns: 1fr; } }
+.db-time { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 8px; }
+.db-time b { font-size: 1.9rem; font-weight: 600; color: var(--accent); }
+.db-time span { color: var(--muted); font-size: .86rem; }
+
+.minutes { max-width: 760px; }
+.min-h { border-bottom: 2px solid var(--gold); padding-bottom: 14px; margin-bottom: 18px; }
+.min-k { color: var(--gold); font-size: .8rem; font-weight: 600; letter-spacing: .04em; }
+.min-h h1 { font-size: 1.6rem; margin: 2px 0 4px; }
+.min-h .row { margin-top: 12px; }
+.minutes section { margin-bottom: 18px; }
+.minutes h2 { font-size: 1rem; color: var(--accent); margin-bottom: 6px; }
+.minutes ol, .minutes ul { margin: 0; padding-inline-start: 22px; display: grid; gap: 4px; }
+.minutes .db-team { width: 100%; }
+.transcript { white-space: pre-wrap; font-size: .86rem; color: var(--ink-2); margin-top: 8px; }
+.min-f { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 20px; }
+
+@media print {
+  .side, .tabbar, .fab, .pane, .no-print, .toast, #focus { display: none !important; }
+  body, .shell { background: #fff !important; color: #000; display: block !important; }
+  .view { max-width: none !important; padding: 0 !important; }
+  .minutes h2 { color: #000; }
+}

@@ -70,6 +70,18 @@ export function vDash(h) {
   }
   const team = [...ppl.values()].sort((a, b) => b.late - a.late || b.follow - a.follow || b.open - a.open);
 
+  // الوقت الفعلي (من وضع التركيز) ودقة التقدير
+  let focusWeek = 0;
+  for (const t of S().tasks) for (const [d, m] of (Array.isArray(t.focusLog) ? t.focusLog : [])) if (d >= wsK) focusWeek += m;
+  const measured = doneAll.filter((t) => t.est && t.spent && dayOf(t.completedAt) >= keyAdd(t0, -28));
+  const ratios = measured.map((t) => t.spent / t.est).sort((a, b) => a - b);
+  const med = ratios.length ? ratios[Math.floor(ratios.length / 2)] : null;
+  const accTxt = med == null ? null
+    : med > 1.15 ? `مهامك تأخذ عادةً ${n(Math.round(med * 10) / 10)} ضعف ما تقدّره. زد تقديراتك أو قسّم المهام.`
+      : med < 0.85 ? 'تنجز عادةً أسرع مما تقدّر. يمكنك التزام بمهام أكثر قليلًا.'
+        : 'تقديراتك دقيقة. حافظ عليها.';
+  const fmtM = (m) => (m >= 60 ? `${n(Math.floor(m / 60))} س${m % 60 ? ` ${n(m % 60)} د` : ''}` : `${n(m)} د`);
+
   const goals = S().goals.filter((g) => g.status === 'active' || !g.status).map((g) => ({ g, p: goalProgress(g) }));
 
   const tile = (v, label, cls = '', href = '') => {
@@ -114,6 +126,10 @@ export function vDash(h) {
     <section class="panel"><p class="lbl">${I('people', 'd')}الإسناد والمتابعة</p>
       ${team.length ? `<table class="db-team"><thead><tr><th>الشخص</th><th>مفتوحة</th><th>متأخرة</th><th>متابعة</th></tr></thead><tbody>${team.map((p) => `<tr><td>${esc(p.name)}</td><td>${n(p.open)}</td><td class="${p.late ? 'tbad' : ''}">${n(p.late)}</td><td class="${p.follow ? 'twarn' : ''}">${n(p.follow)}</td></tr>`).join('')}</tbody></table>`
     : '<p class="note">لم تُسند مهمة بعد. اكتب <b>@الاسم</b> في أي مهمة لتتبّعها من هنا.</p>'}
+    </section>
+    <section class="panel"><p class="lbl">${I('timer', 'd')}وقتك الفعلي <span class="cnt">من وضع التركيز</span></p>
+      <div class="db-time"><b>${focusWeek ? fmtM(focusWeek) : '—'}</b><span>تركيز هذا الأسبوع</span></div>
+      <p class="note">${accTxt ? `${accTxt} (من ${n(measured.length)} مهمة لها تقدير ووقت فعلي، آخر ٢٨ يومًا)` : 'قدّر وقت المهمة ثم أنجزها في وضع التركيز، وسيظهر هنا كم تصيب في تقديرك.'}</p>
     </section>
     <section class="panel"><p class="lbl">${I('flag', 'd')}الأهداف النشطة${streak() ? ` <span class="cnt">سلسلة ${n(streak())} يوم</span>` : ''}</p>
       ${goals.length ? goals.map(({ g, p }) => `<a class="db-goal" href="#/goals"><span>${g.emoji ? `${esc(g.emoji)} ` : ''}${esc(g.title)}</span><div class="db-meter" role="progressbar" aria-valuenow="${p.pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p.pct}%"></i></div><b>${p.total ? `${n(p.pct)}%` : '—'}</b></a>`).join('')

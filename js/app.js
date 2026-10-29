@@ -221,7 +221,23 @@ const pickerBase = () => ({ loads: dayLoads(), capacity: (Number(settings().capa
 
 /* ═════════════ وضع التركيز ═════════════ */
 let fxTick = null;
+/** قياس الوقت الفعلي: كل فترة تشغيل في وضع التركيز تُضاف لمهمتها (دقائق) مع سجل يومي مختصر. */
+function logFocus() {
+  const T = ui.timer;
+  if (!T.runFrom || !ui.focusId) return;
+  const secs = (Math.min(Date.now(), T.endAt || Date.now()) - T.runFrom) / 1000;
+  T.runFrom = 0;
+  const min = Math.round(secs / 60);
+  const t = taskById(ui.focusId);
+  if (!t || min < 1) return;
+  const day = todayKey();
+  const log = (Array.isArray(t.focusLog) ? t.focusLog.filter((x) => Array.isArray(x)) : []).slice(-29);
+  if (log.length && log[log.length - 1][0] === day) log[log.length - 1] = [day, log[log.length - 1][1] + min]; else log.push([day, min]);
+  updateTask(t.id, { spent: (t.spent || 0) + min, focusLog: log });
+}
+
 function startFocus(id) {
+  if (ui.focusId && ui.focusId !== id) logFocus();
   ui.focusId = id;
   ui.timer = { total: ui.timer.total, left: ui.timer.total, running: false, endAt: 0 };
   render();
@@ -236,6 +252,7 @@ function tick() {
   if (arc) { const c = 2 * Math.PI * 92; arc.style.strokeDashoffset = (c * (T.left / T.total)).toFixed(1); }
   document.title = `${fmtClock(T.left)} · تركيز`;
   if (T.left === 0) {
+    logFocus();
     T.running = false;
     clearInterval(fxTick);
     document.title = 'مركز القيادة';
@@ -259,6 +276,7 @@ function chime() {
   } catch {}
 }
 function endFocus() {
+  if (ui.timer.running) logFocus();
   ui.focusId = null;
   ui.timer.running = false;
   clearInterval(fxTick);
@@ -299,7 +317,7 @@ document.addEventListener('click', (e) => {
   const { act } = el.dataset;
   const id = el.dataset.id || ui.sel;
   switch (act) {
-    case 'toggle': done(el.dataset.id); if (el.dataset.end) endFocus(); break;
+    case 'toggle': if (el.dataset.end && ui.timer.running) { tick(); logFocus(); ui.timer.running = false; } done(el.dataset.id); if (el.dataset.end) endFocus(); break;
     case 'open': ui.sel = el.dataset.id; forcePane = true; render(); if (!isDesk()) paneEl.scrollTop = 0; break;
     case 'close-pane': ui.sel = null; render(); break;
     case 'waiting': { const t = taskById(id); if (t) { const on = t.status !== 'waiting'; forcePane = true; setWaiting(id, on); toast(on ? 'سُجّلت بانتظار الاعتماد. لن تُحسب متأخرة عليك.' : 'أُعيدت مفتوحة.'); } break; }
@@ -313,6 +331,17 @@ document.addEventListener('click', (e) => {
     }
     case 'unfocus': forcePane = true; updateTask(id, { focusDate: null }); break;
     case 'followed': forcePane = true; followedUp(id); toast('سُجّلت المتابعة. التالية بعد 3 أيام.'); break;
+    case 'voice': {
+      const ctx = el.closest('form')?.dataset || {};
+      if (dlg.open) dlg.close();
+      import('./ai.js').then((m) => { const st = m.aiState(); if (st !== 'ok') { toast(m.AI_MSG[st]); return; } m.openVoice({ dlg, I, toast, ctx: { area: ctx.area || (ui.route === 'area' ? ui.param : null), ctx: ctx.ctx } }); });
+      break;
+    }
+    case 'minutes': import('./ai.js').then((m) => m.openMinutes({ dlg, I, toast, id: el.dataset.id, go: (h) => { location.hash = h; } })); break;
+    case 'meeting-toggle': { const t = taskById(id); if (t) { forcePane = true; const on = t.kind !== 'meeting'; updateTask(id, on ? { kind: 'meeting', duration: t.duration || 60, remind: t.time && t.remind == null ? 15 : t.remind } : { kind: null }); } break; }
+    case 'set-dur': forcePane = true; updateTask(ui.sel, { duration: Number(el.dataset.v) }); break;
+    case 'ics': { const t = taskById(id); if (t) downloadIcs(t); break; }
+    case 'print': window.print(); break;
     case 'set-est': { const t = taskById(ui.sel); const v = Number(el.dataset.v); forcePane = true; updateTask(ui.sel, { est: t?.est === v ? null : v }); break; }
     case 'pick-due': {
       const t = taskById(ui.sel);
@@ -362,8 +391,8 @@ document.addEventListener('click', (e) => {
     case 'fx-len': if (!ui.timer.running) { const s = +el.dataset.m * 60; ui.timer.total = s; ui.timer.left = s; render(); } break;
     case 'fx-toggle': {
       const T = ui.timer;
-      if (T.running) { tick(); T.running = false; clearInterval(fxTick); document.title = 'مركز القيادة'; }
-      else { if (T.left === 0) T.left = T.total; T.endAt = Date.now() + T.left * 1000; T.running = true; clearInterval(fxTick); fxTick = setInterval(tick, 500); }
+      if (T.running) { tick(); logFocus(); T.running = false; clearInterval(fxTick); document.title = 'مركز القيادة'; }
+      else { if (T.left === 0) T.left = T.total; T.endAt = Date.now() + T.left * 1000; T.runFrom = Date.now(); T.running = true; clearInterval(fxTick); fxTick = setInterval(tick, 500); }
       render();
       break;
     }
@@ -465,7 +494,7 @@ document.addEventListener('change', (e) => {
     const f = el.dataset.f;
     let v = el.type === 'checkbox' ? el.checked : el.value.trim();
     if (f === 'title' && !v) { el.value = taskById(ui.sel)?.title || ''; return; }
-    if (['areaId', 'goalId', 'due', 'repeat', 'followUp'].includes(f)) v = v || null;
+    if (['areaId', 'goalId', 'due', 'repeat', 'followUp', 'place'].includes(f)) v = v || null;
     forcePane = f !== 'title' && f !== 'notes';
     updateTask(ui.sel, { [f]: v });
     return;
@@ -685,6 +714,29 @@ function setupAreaMap(domains) {
 
 /** تنقية ملف مستورد: معرّفات آمنة، تواريخ صحيحة، ونصوص فقط — لا شيء يُدرج في الصفحة كما هو. */
 const SAFE_ID = /^[\w-]{1,100}$/;
+/** ملف تقويم (ICS) يفتحه تقويم الآيفون أو Outlook: الاجتماع بوقته ومدته وتنبيه قبل ١٥ دقيقة. */
+function downloadIcs(t) {
+  if (!t.due) { toast('حدّد موعد الاجتماع أولًا.'); return; }
+  const e = (x) => String(x || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const d = t.due.replace(/-/g, '');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const when = t.time
+    ? [`DTSTART:${d}T${t.time.replace(':', '')}00`, `DURATION:PT${t.duration || 60}M`]
+    : [`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${keyAdd(t.due, 1).replace(/-/g, '')}`];
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ahmed-Track//AR', 'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+    `UID:${t.id}@ahmed-track`, `DTSTAMP:${stamp}`, ...when, `SUMMARY:${e(t.title)}`,
+    ...(t.place ? [`LOCATION:${e(t.place)}`] : []), ...(t.notes ? [`DESCRIPTION:${e(t.notes.slice(0, 1000))}`] : []),
+    ...(t.time ? ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${e(t.title)}`, 'TRIGGER:-PT15M', 'END:VALARM'] : []),
+    'END:VEVENT', 'END:VCALENDAR'];
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${t.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || 'meeting'}.ics`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+  toast('افتح الملف ثم «إضافة إلى التقويم».');
+}
+
 function setTheme(v) {
   const th = v === 'green' ? 'green' : 'exec';
   env.theme = th;
@@ -706,6 +758,22 @@ function sanitize(data) {
       for (const k of ['due', 'followUp', 'focusDate', 'assignedAt', 'targetDate']) if (k in y) y[k] = date(y[k]);
       if (c === 'tasks' && 'status' in y) y.status = ['todo', 'done', 'waiting'].includes(y.status) ? y.status : 'todo';
       if ('waitingSince' in y) y.waitingSince = date(y.waitingSince);
+      if (c === 'tasks') {
+        if ('kind' in y) y.kind = y.kind === 'meeting' ? 'meeting' : null;
+        if ('place' in y) y.place = str(y.place, 120) || null;
+        for (const k of ['duration', 'spent']) if (k in y) y[k] = Number.isFinite(y[k]) && y[k] >= 0 && y[k] < 1e6 ? Math.round(y[k]) : null;
+        if ('focusLog' in y) y.focusLog = (Array.isArray(y.focusLog) ? y.focusLog : []).filter((x) => Array.isArray(x) && isDateKey(x[0]) && Number.isFinite(x[1])).slice(-30).map((x) => [x[0], Math.round(x[1])]);
+        if ('minutes' in y) {
+          const m = y.minutes && typeof y.minutes === 'object' ? y.minutes : null;
+          const arr = (a, n, f) => (Array.isArray(a) ? a.slice(0, n).map(f) : []);
+          y.minutes = m ? {
+            at: str(m.at, 40), summary: str(m.summary, 2000), transcript: str(m.transcript, 30000),
+            attendees: arr(m.attendees, 30, (x) => str(x, 60)), decisions: arr(m.decisions, 30, (x) => str(x, 400)),
+            actions: arr(m.actions, 40, (a) => ({ title: str(a?.title, 200), owner: str(a?.owner, 40) || null, due: date(a?.due), taskId: SAFE_ID.test(a?.taskId || '') ? a.taskId : null })),
+            dates: arr(m.dates, 20, (d) => ({ what: str(d?.what, 200), date: date(d?.date) })),
+          } : null;
+        }
+      }
       if ('time' in y) y.time = /^\d{2}:\d{2}$/.test(y.time) ? y.time : null;
       for (const k of ['areaId', 'goalId', 'nextId']) if (y[k] && !SAFE_ID.test(y[k])) y[k] = null;
       if (Array.isArray(y.steps)) y.steps = y.steps.filter((st) => st && SAFE_ID.test(st.id)).map((st) => ({ id: st.id, title: str(st.title, 200), done: !!st.done }));

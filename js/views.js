@@ -13,6 +13,7 @@ import {
 } from './model.js';
 import { vAll } from './tasks.js';
 import { notify } from './notify.js';
+import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
 
 export const ui = {
@@ -46,7 +47,8 @@ export function row(t, o = {}) {
   if (isWaiting(t) && !done) meta.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
   if (t.due) meta.push(`<span class="m ${isOverdue(t) ? 'late' : t.due === todayKey() && !done ? 'soon' : ''}">${I(t.time ? 'clock' : 'cal')}${dueLabel(t)}</span>`);
   if (t.remind != null && t.due && !done) meta.push(`<span class="m" title="تذكير: ${REMINDS[t.remind] || ''}">${I('bell')}</span>`);
-  if (t.est) meta.push(`<span class="m">${I('hourglass')}${fmtMin(t.est)}</span>`);
+  if (t.kind === 'meeting') meta.push(`<span class="m m-meet">${I('meet')}اجتماع${t.place ? `، ${esc(t.place)}` : ''}${t.minutes ? ` ${I('doc')}` : ''}</span>`);
+  if (t.est || t.spent) meta.push(`<span class="m" title="${t.spent ? `الوقت الفعلي في وضع التركيز: ${fmtMin(t.spent)}` : 'الوقت المقدّر'}">${I(t.spent ? 'timer' : 'hourglass')}${t.spent ? `${fmtMin(t.spent)}${t.est ? ` من ${fmtMin(t.est)}` : ''}` : fmtMin(t.est)}</span>`);
   if (t.steps?.length) meta.push(`<span class="m">${I('steps')}${n(t.steps.filter((s) => s.done).length)}/${n(t.steps.length)}</span>`);
   if (t.repeat) meta.push(`<span class="m" title="${REPEATS[t.repeat] || ''}">${I('repeat')}</span>`);
   if (t.assignee && !o.hideAssignee) meta.push(`<span class="m ${followDue(t) ? 'late' : ''}">${avatar(t.assignee)}${esc(t.assignee)}${followDue(t) ? '، حان موعد المتابعة' : ''}</span>`);
@@ -111,6 +113,7 @@ export function quickAdd(ctx = {}, placeholder = 'أضف مهمة', id = 'qa') {
   return `<form class="qa" data-form="quick" data-qid="${id}" ${attrs} autocomplete="off">
     <span class="qa-plus">${I('plus')}</span>
     <input id="${id}" name="title" class="qa-in" data-draft="${id}" value="${esc(ui.drafts[id] || '')}" placeholder="${placeholder}" maxlength="200" aria-label="${placeholder}" enterkeyhint="done" />
+    <button type="button" class="qa-mic" data-act="voice" title="إدخال صوتي" aria-label="إدخال صوتي: قل المهمة أو الاجتماع">${I('mic', 'd')}</button>
     <input type="hidden" name="due" value="${esc(d.date || '')}" /><input type="hidden" name="time" value="${esc(d.time || '')}" /><input type="hidden" name="remind" value="${esc(d.remind ?? '')}" /><input type="hidden" name="intent" value="${esc(d.intent || '')}" />
     <div class="qa-more">
       <label class="chip-t"><input type="checkbox" name="important" /> مهم</label>
@@ -443,6 +446,11 @@ function vSettings() {
     <section class="panel"><h2>${I('user', 'i')}اسمك</h2>
       <form class="arow" data-form="name"><input class="in" name="name" value="${esc(localName())}" maxlength="30" placeholder="يظهر في التحية" /><button class="btn sm" type="submit">حفظ</button></form></section>
     ${notifyPanel()}
+    <section class="panel"><h2>${I('mic', 'd')}الإدخال الصوتي ومحضر الاجتماع</h2>
+      ${!pushConfig?.url ? '<p class="note">يعمل بعد تشغيل خادم التطبيق (نفس خادم التنبيهات). حتى ذلك الحين يظهر زر الميكروفون لكنه لا يعمل.</p>'
+    : store.mode !== 'cloud' ? '<p class="warn">سجّل الدخول للمزامنة أولًا.</p>'
+      : '<p class="ok">جاهز. اضغط الميكروفون بجانب حقل الإضافة وتكلّم، أو افتح أي اجتماع واضغط «سجّل محضر الاجتماع».</p>'}
+      <ul class="steps"><li>الصوت يُحوَّل إلى نص على خادمك ثم يُحذف، ولا يُضاف شيء قبل أن تراجعه.</li><li>الحد المجاني يكفي نحو ساعتين ونصف من التفريغ يوميًا.</li><li>على الآيفون: افتح التطبيق من أيقونة الشاشة الرئيسية واسمح بالميكروفون.</li></ul></section>
     <section class="panel"><h2>${I('arrow', 'i')}المزامنة</h2>${sync}</section>
     <section class="panel" id="areas"><h2>${I('list', 'd')}المجالات</h2>${areaRows}
       <form class="arow" data-form="new-area">
@@ -477,6 +485,28 @@ function vSettings() {
   </div>`;
 }
 
+/* ═════════════ المحضر (قابل للطباعة كـPDF) ═════════════ */
+function vMinutes() {
+  const t = ui.param ? S().tasks.find((x) => x.id === ui.param) : null;
+  const m = t?.minutes;
+  if (!m) return `${vh('المحضر')}<div class="empty">${I('doc', 'd', 'big')}<p>لا محضر لهذا الاجتماع بعد. افتح الاجتماع واضغط «سجّل محضر الاجتماع».</p></div>`;
+  const a = hasArea(t) ? areaById(t.areaId) : null;
+  const list = (arr) => (arr?.length ? `<ol>${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : '<p class="note">لا شيء.</p>');
+  const when = t.due ? `${fmtDate(t.due)}${t.time ? ` ${fmtTime(t.time)}` : ''}` : fmtDate(m.at.slice(0, 10));
+  return `<article class="minutes">
+    <header class="min-h"><p class="min-k">محضر اجتماع</p><h1>${esc(t.title)}</h1>
+      <p class="sub">${esc(when)}${t.place ? ` · ${esc(t.place)}` : ''}${a ? ` · ${esc(a.name)}` : ''}</p>
+      <div class="row no-print"><button class="btn primary" data-act="print">${I('print')}طباعة أو حفظ PDF</button><button class="btn" data-act="open" data-id="${t.id}">فتح الاجتماع</button></div></header>
+    ${m.attendees?.length ? `<section><h2>الحضور</h2><p>${m.attendees.map(esc).join('، ')}</p></section>` : ''}
+    <section><h2>الملخص</h2><p>${esc(m.summary || '—')}</p></section>
+    <section><h2>القرارات</h2>${list(m.decisions)}</section>
+    <section><h2>المطلوب</h2>${m.actions?.length ? `<table class="db-team"><thead><tr><th>المطلوب</th><th>المسؤول</th><th>الموعد</th><th>الحالة</th></tr></thead><tbody>${m.actions.map((x) => { const tk = x.taskId ? S().tasks.find((y) => y.id === x.taskId) : null; return `<tr><td>${esc(x.title)}</td><td>${esc(x.owner || '—')}</td><td>${x.due ? fmtDate(x.due) : '—'}</td><td>${tk ? (isOpen(tk) ? 'مفتوحة' : 'منجزة') : '—'}</td></tr>`; }).join('')}</tbody></table>` : '<p class="note">لا شيء.</p>'}</section>
+    ${m.dates?.length ? `<section><h2>مواعيد قادمة</h2><ul>${m.dates.map((d) => `<li>${esc(d.what)}${d.date ? ` — ${fmtDate(d.date)}` : ''}</li>`).join('')}</ul></section>` : ''}
+    ${m.transcript ? `<details class="no-print"><summary>النص الكامل المفرّغ</summary><p class="transcript">${esc(m.transcript)}</p></details>` : ''}
+    <p class="note min-f">أُعدّ بمساعدة الذكاء الاصطناعي من تسجيل الاجتماع، وروجع قبل الحفظ · ${fmtDate(m.at.slice(0, 10))}</p>
+  </article>`;
+}
+
 /* ═════════════ الـWidget ═════════════ */
 function vWidget() {
   const focus = focusToday();
@@ -494,7 +524,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: vGoals, review: vReview,
-  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */
@@ -545,12 +575,23 @@ export function pane(t) {
 
     <div class="pblk">
       <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : t.due ? '<small>بلا تذكير</small>' : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
+      ${t.spent ? `<div class="prow static">${I('timer', 'd')}<span>الوقت الفعلي<small>${fmtMin(t.spent)} في وضع التركيز${t.est ? `، ${t.spent > t.est ? `أكثر من تقديرك بـ${fmtMin(t.spent - t.est)}` : 'ضمن تقديرك'}` : ''}</small></span></div>` : ''}
       <div class="prow static">${I('hourglass', 'd')}<span>الوقت المتوقع</span>
         <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" aria-pressed="${t.est === m}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
       <div class="prow static">${I('repeat')}<span>التكرار</span><select class="in sm" data-f="repeat" aria-label="التكرار"><option value="">لا يتكرر</option>${Object.entries(REPEATS).map(([k, v]) => `<option value="${k}"${t.repeat === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="prow static">${I('grid', 'd')}<span>التصنيف</span>
         <label class="chip-t"><input type="checkbox" data-f="important" ${t.important ? 'checked' : ''} /> مهم</label>
         <label class="chip-t"><input type="checkbox" data-f="urgent" ${t.urgent ? 'checked' : ''} /> عاجل</label></div>
+    </div>
+
+    <div class="pblk meetblk">
+      <button class="prow${t.kind === 'meeting' ? ' on' : ''}" data-act="meeting-toggle" data-id="${t.id}" aria-pressed="${t.kind === 'meeting'}">${I('meet', 'd')}<span>${t.kind === 'meeting' ? '<b>اجتماع</b>' : 'هذا اجتماع'}</span></button>
+      ${t.kind === 'meeting' ? `
+      <div class="prow static">${I('pin')}<span>المكان</span><input class="in sm" data-f="place" value="${esc(t.place || '')}" maxlength="120" placeholder="المكتب، أونلاين…" aria-label="مكان الاجتماع" /></div>
+      <div class="prow static">${I('clock')}<span>المدة</span><div class="seg sm">${[30, 60, 90, 120].map((m) => `<button class="${(t.duration || 60) === m ? 'on' : ''}" aria-pressed="${(t.duration || 60) === m}" data-act="set-dur" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
+      <button class="prow" data-act="ics" data-id="${t.id}">${I('calplus', 'i')}<span>أضف لتقويم الجوال<small>${t.due ? 'ملف تقويم بتنبيه قبل ١٥ دقيقة' : 'حدّد موعد الاجتماع أولًا'}</small></span></button>
+      ${t.minutes ? `<a class="prow" href="#/minutes/${t.id}">${I('doc', 'd')}<span><b>المحضر</b><small>${n(t.minutes.decisions?.length || 0)} قرار، ${n(t.minutes.actions?.length || 0)} مطلوب</small></span></a>` : ''}
+      <button class="prow" data-act="minutes" data-id="${t.id}">${I('mic', 'd')}<span>${t.minutes ? 'محضر جديد يحلّ محل الحالي' : 'سجّل محضر الاجتماع'}<small>تسجيل أو نص ← قرارات ومهام مُسندة</small></span></button>` : ''}
     </div>
 
     <div class="pblk" id="assign">

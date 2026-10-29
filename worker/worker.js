@@ -9,6 +9,12 @@
 //   POST /test         تنبيه تجريبي فوري لكل أجهزة المستخدم
 //   كل دقيقة (Cron)    يرسل ما حان وقته، ويحذف الأجهزة التي لم تعد صالحة
 //
+// الذكاء الاصطناعي (اختياري، يحتاج ربط Workers AI باسم AI — مجاني ضمن ١٠٬٠٠٠ neuron يوميًا):
+//   POST /transcribe   صوت WAV (base64 نصًا خامًا) ← نص عربي (Whisper)
+//   POST /parse        نص الملاحظة الصوتية ← مهام/اجتماعات بحقولها، للتأكيد قبل الإضافة
+//   POST /minutes      نص اجتماع ← ملخص، حضور، قرارات، مطلوب من كل شخص، مواعيد
+//   لا يُحفظ أي صوت أو نص على الخادم؛ يُعالج ويُعاد فورًا.
+//
 // الأمان: كل طلب يحمل رمز دخول Firebase يُتحقق من توقيعه محليًا (مفاتيح Google العامة)؛
 // المستخدم لا يرى ولا يغيّر إلا بياناته. لا أسرار يدوية: مفاتيح VAPID تُولَّد وتُحفظ في D1.
 //
@@ -179,6 +185,143 @@ async function limited(db, key, ms) {
   return false;
 }
 
+/* ───────── الذكاء الاصطناعي ─────────
+   حدود يومية لكل مستخدم تحمي الحصة المجانية المشتركة (١٠٬٠٠٠ neuron/يوم):
+   تفريغ الصوت ≈ ٤٧ neuron للدقيقة، والتحليل بضع عشرات لكل طلب. */
+const STT = '@cf/openai/whisper-large-v3-turbo';
+const LLM = '@cf/meta/llama-4-scout-17b-16e-instruct';
+const DAY_LIMITS = { transcribe: 150, parse: 120, minutes: 20 };
+const MAX_AUDIO_B64 = 6_000_000; // ≈ ٣ دقائق WAV بجودة 16kHz — التطبيق يقسّم التسجيل الطويل إلى مقاطع
+
+async function quota(db, uid, kind) {
+  const day = new Date().toISOString().slice(0, 10);
+  const k = `ai:${kind}:${uid}:${day}`;
+  // hits.at يُستخدم هنا عدّادًا
+  const row = await db.prepare('INSERT INTO hits (k, at) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET at = at + 1 RETURNING at').bind(k).first();
+  return (row?.at || 0) > DAY_LIMITS[kind];
+}
+
+function pickJson(r) {
+  const raw = r?.response ?? r?.result?.response ?? r;
+  if (raw && typeof raw === 'object') return raw;
+  const t = String(raw || '');
+  const a = t.indexOf('{'); const b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(t.slice(a, b + 1)); } catch { return null; }
+}
+
+async function llmJson(env, system, user, schema, maxTokens) {
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+  try {
+    const r = await env.AI.run(LLM, { messages, max_tokens: maxTokens, temperature: 0.1, response_format: { type: 'json_schema', json_schema: schema } });
+    const j = pickJson(r); if (j) return j;
+  } catch {}
+  const r = await env.AI.run(LLM, { messages, max_tokens: maxTokens, temperature: 0.1 });
+  return pickJson(r);
+}
+
+const S_STR = { type: 'string' };
+const PARSE_SCHEMA = {
+  type: 'object', required: ['items'],
+  properties: { items: { type: 'array', items: { type: 'object', required: ['kind', 'title'], properties: {
+    kind: { type: 'string', enum: ['task', 'meeting'] }, title: S_STR, due: S_STR, time: S_STR, duration: { type: 'number' },
+    place: S_STR, area: S_STR, assignee: S_STR, important: { type: 'boolean' }, urgent: { type: 'boolean' } } } } },
+};
+const MINUTES_SCHEMA = {
+  type: 'object', required: ['summary', 'decisions', 'actions'],
+  properties: {
+    summary: S_STR, attendees: { type: 'array', items: S_STR }, decisions: { type: 'array', items: S_STR },
+    actions: { type: 'array', items: { type: 'object', required: ['title'], properties: { title: S_STR, owner: S_STR, due: S_STR } } },
+    dates: { type: 'array', items: { type: 'object', properties: { what: S_STR, date: S_STR } } },
+  },
+};
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const tcut = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+
+function cleanParsed(j, areas) {
+  const items = Array.isArray(j?.items) ? j.items.slice(0, 12) : [];
+  return items.map((it) => ({
+    kind: it.kind === 'meeting' ? 'meeting' : 'task',
+    title: tcut(it.title, 200),
+    due: DATE.test(it.due || '') ? it.due : null,
+    time: TIME.test(it.time || '') ? it.time : null,
+    duration: Number.isFinite(it.duration) && it.duration > 0 && it.duration <= 600 ? Math.round(it.duration) : null,
+    place: tcut(it.place, 120) || null,
+    area: areas.includes(it.area) ? it.area : null,
+    assignee: tcut(it.assignee, 40) || null,
+    important: !!it.important, urgent: !!it.urgent,
+  })).filter((it) => it.title);
+}
+
+function cleanMinutes(j) {
+  const arr = (a, n) => (Array.isArray(a) ? a : []).slice(0, n);
+  return {
+    summary: tcut(j?.summary, 2000),
+    attendees: arr(j?.attendees, 30).map((x) => tcut(x, 60)).filter(Boolean),
+    decisions: arr(j?.decisions, 30).map((x) => tcut(x, 400)).filter(Boolean),
+    actions: arr(j?.actions, 40).map((a) => ({ title: tcut(a?.title, 200), owner: tcut(a?.owner, 40) || null, due: DATE.test(a?.due || '') ? a.due : null })).filter((a) => a.title),
+    dates: arr(j?.dates, 20).map((d) => ({ what: tcut(d?.what, 200), date: DATE.test(d?.date || '') ? d.date : null })).filter((d) => d.what),
+  };
+}
+
+async function aiRoute(path, req, env, db, uid, url) {
+  if (!env.AI) return json({ error: 'ai binding missing' }, 501);
+  const kind = path.slice(1);
+  if (await quota(db, uid, kind)) return json({ error: 'daily limit' }, 429);
+
+  if (kind === 'transcribe') {
+    // الجسم نص base64 خام (لا JSON) ⇒ لا تحليل على المعالج، يُمرّر كما هو
+    const audio = await req.text();
+    if (!audio || audio.length > MAX_AUDIO_B64 || !/^[A-Za-z0-9+/=]+$/.test(audio.slice(0, 200))) return json({ error: 'bad audio' }, 400);
+    const prompt = tcut(url.searchParams.get('hint') || '', 300);
+    const r = await env.AI.run(STT, { audio, language: 'ar', vad_filter: true, ...(prompt ? { initial_prompt: prompt } : {}) });
+    return json({ text: tcut(r?.text, 20000) });
+  }
+
+  const body = await req.json().catch(() => ({}));
+  const today = DATE.test(body.today || '') ? body.today : new Date().toISOString().slice(0, 10);
+  const weekday = tcut(body.weekday, 20);
+  const areas = (Array.isArray(body.areas) ? body.areas : []).map((a) => tcut(a, 40)).filter(Boolean).slice(0, 20);
+  const people = (Array.isArray(body.people) ? body.people : []).map((a) => tcut(a, 40)).filter(Boolean).slice(0, 40);
+
+  if (kind === 'parse') {
+    const text = tcut(body.text, 4000);
+    if (!text) return json({ items: [] });
+    const sys = `أنت تحوّل ملاحظة صوتية عربية (قد تكون بلهجة يمنية أو سعودية أو خليجية) إلى عناصر منظمة لتطبيق مهام. أعد JSON فقط بالشكل {"items":[...]}.
+اليوم ${today}${weekday ? ` (${weekday})` : ''}. الأسبوع يبدأ السبت.
+- kind: "meeting" إن ذُكر اجتماع أو لقاء أو موعد مع أشخاص، وإلا "task".
+- title: عنوان قصير بفصحى بسيطة يبدأ بفعل للمهمة، أو «اجتماع مع ...» للاجتماع. لا تخترع تفاصيل لم تُذكر.
+- due: تاريخ YYYY-MM-DD فقط إن ذُكر يوم أو تاريخ (بكرة/غدًا، بعد بكرة، الأحد، الأسبوع الجاي = السبت القادم...). وإلا اتركه فارغًا.
+- time: HH:MM بنظام ٢٤ ساعة إن ذُكر وقت (الصبح/الصباح ⇒ قبل الظهر، العصر/المغرب/الليل ⇒ بعد الظهر).
+- duration بالدقائق للاجتماع إن ذُكرت. place للمكان إن ذُكر.
+- area: واحدة من هذه بالضبط إن كان واضحًا: ${areas.join('، ') || '(لا يوجد)'}. وإلا فارغ.
+- assignee: اسم الشخص المكلّف إن قال «خلي فلان» أو «كلّف فلان». أشخاص معروفون: ${people.join('، ') || '(لا يوجد)'}.
+- important للمهم، urgent للعاجل أو «ضروري اليوم».
+- ملاحظة واحدة قد تحوي عدة عناصر: افصلها.`;
+    const j = await llmJson(env, sys, text, { name: 'items', schema: PARSE_SCHEMA }, 900);
+    return json({ items: cleanParsed(j, areas) });
+  }
+
+  if (kind === 'minutes') {
+    const text = tcut(body.text, 60000);
+    const title = tcut(body.title, 200);
+    if (text.length < 20) return json({ error: 'too short' }, 400);
+    const sys = `أنت أمين سر محترف تكتب محضر اجتماع عمل بالعربية الفصحى المختصرة من تفريغ صوتي قد يكون بلهجة يمنية ويحوي أخطاء تفريغ. أعد JSON فقط.
+اليوم ${today}. ${title ? `موضوع الاجتماع: ${title}.` : ''}
+- summary: ملخص من ٢ إلى ٤ جمل.
+- attendees: أسماء من ذُكروا أو تحدثوا فقط. لا تخترع أسماء.
+- decisions: القرارات المتفق عليها، كل قرار جملة واحدة.
+- actions: المطلوب تنفيذه: title يبدأ بفعل، owner اسم المسؤول إن ذُكر (أشخاص معروفون: ${people.join('، ') || '-'})، due بصيغة YYYY-MM-DD إن ذُكر موعد.
+- dates: المواعيد القادمة المذكورة (اجتماع لاحق، تسليم...).
+- إن لم يُذكر شيء في بند فاتركه مصفوفة فارغة. لا تضف ما لم يُقل.`;
+    const j = await llmJson(env, sys, text, { name: 'minutes', schema: MINUTES_SCHEMA }, 2500);
+    if (!j) return json({ error: 'model failed' }, 502);
+    return json(cleanMinutes(j));
+  }
+  return json({ error: 'not found' }, 404);
+}
+
 /* ───────── المسارات ───────── */
 async function handle(req, env) {
   const url = new URL(req.url);
@@ -188,11 +331,12 @@ async function handle(req, env) {
   await schema(db);
 
   if (req.method === 'GET' && url.pathname === '/vapid') return json({ publicKey: (await vapid(db)).pub });
-  if (req.method === 'GET' && url.pathname === '/') return json({ ok: true, service: 'command-center-push' });
+  if (req.method === 'GET' && url.pathname === '/') return json({ ok: true, service: 'command-center-push', ai: !!env.AI });
   if (req.method !== 'POST') return json({ error: 'not found' }, 404);
 
   const uid = await verifyUser(req, env);
   if (!uid) return json({ error: 'unauthorized' }, 401);
+  if (['/transcribe', '/parse', '/minutes'].includes(url.pathname)) return aiRoute(url.pathname, req, env, db, uid, url);
   const body = await req.json().catch(() => ({}));
 
   if (url.pathname === '/subscribe') {
