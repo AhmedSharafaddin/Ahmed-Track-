@@ -7,6 +7,7 @@ import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay, isDateKey } from './uti
 import {
   S, areas, areaById, goalById, taskById, isOpen, createTask, updateTask, toggleTask, focusPatch, FULL_MSG,
   rollover, followedUp, parseQuick, convertSetupFile, settings, saveSettings, snooze, dayLoads,
+  setWaiting,
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
@@ -53,10 +54,11 @@ function paint() {
   const html = (ROUTES[ui.route] || ROUTES.today)();
   if (html !== last.view) { view.innerHTML = html; last.view = html; }
   document.body.classList.toggle('widget-mode', ui.route === 'widget');
+  document.body.dataset.route = ui.route;
   document.body.classList.add('ready');
 
   const nv = navItems();
-  const navHtml = `${nv.smart}<hr />${nv.views}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a>`;
+  const navHtml = `${nv.grp('مركز التحكم')}${nv.ctrl}${nv.grp('القوائم الذكية')}${nv.smart}${nv.grp('أدوات')}${nv.views}${nv.grp('المجالات')}${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a>`;
   if (navHtml !== last.nav) { navEl.innerHTML = navHtml; last.nav = navHtml; }
   const here = location.hash.replace(/#areas$/, '').replace(/\?.*$/, '') || '#/today';
   if (here !== last.route) {
@@ -300,6 +302,8 @@ document.addEventListener('click', (e) => {
     case 'toggle': done(el.dataset.id); if (el.dataset.end) endFocus(); break;
     case 'open': ui.sel = el.dataset.id; forcePane = true; render(); if (!isDesk()) paneEl.scrollTop = 0; break;
     case 'close-pane': ui.sel = null; render(); break;
+    case 'waiting': { const t = taskById(id); if (t) { const on = t.status !== 'waiting'; forcePane = true; setWaiting(id, on); toast(on ? 'سُجّلت بانتظار الاعتماد. لن تُحسب متأخرة عليك.' : 'أُعيدت مفتوحة.'); } break; }
+    case 'theme': setTheme(el.dataset.v); break;
     case 'star': { const t = taskById(id); if (t) updateTask(id, { important: !t.important }); break; }
     case 'focus': {
       const fp = focusPatch();
@@ -451,6 +455,11 @@ function maybeAskNotify() {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.act === 'import' && el.files[0]) { importData(el.files[0]).finally(() => { el.value = ''; }); return; }
+  if (el.dataset.tf) {
+    if (el.dataset.tf === 'status') { location.hash = el.value === 'open' ? '#/all' : `#/all/${el.value}`; return; }
+    if (el.dataset.tf !== 'q') { ui.tf[el.dataset.tf] = el.value; render(); }
+    return;
+  }
   if (el.dataset.set) { saveSettings({ [el.dataset.set]: el.value || null }); return; }
   if (el.dataset.f && ui.sel) {
     const f = el.dataset.f;
@@ -479,6 +488,7 @@ document.addEventListener('input', (e) => {
       box.innerHTML = p.tokens.map((t) => `<span class="tok k-${t.k}">${t.k === 'assignee' ? I('user') : t.k === 'area' ? (t.emoji ? esc(t.emoji) : `<i style="--c:${esc(t.color)}"></i>`) : I('star', 'f')}${esc(t.v)}</span>`).join('');
     }
   }
+  if (el.dataset?.tf === 'q') { ui.tf.q = el.value; render(); return; }
   if (el.dataset?.act === 'search') {
     ui.q = el.value;
     if (ui.q.trim() && ui.route !== 'search') location.hash = '#/search';
@@ -675,6 +685,14 @@ function setupAreaMap(domains) {
 
 /** تنقية ملف مستورد: معرّفات آمنة، تواريخ صحيحة، ونصوص فقط — لا شيء يُدرج في الصفحة كما هو. */
 const SAFE_ID = /^[\w-]{1,100}$/;
+function setTheme(v) {
+  const th = v === 'green' ? 'green' : 'exec';
+  env.theme = th;
+  document.documentElement.dataset.theme = th;
+  try { localStorage.setItem('cc:theme', th); } catch {}
+  last.view = ''; render();
+}
+
 function sanitize(data) {
   const str = (v, max = 4000) => (typeof v === 'string' ? v.slice(0, max) : '');
   const date = (v) => (isDateKey(v) ? v : null);
@@ -686,6 +704,8 @@ function sanitize(data) {
       if ('name' in y) y.name = str(y.name, 80);
       if (c === 'areas') y.color = /^#[0-9a-f]{6}$/i.test(y.color) ? y.color : '#2f9474';
       for (const k of ['due', 'followUp', 'focusDate', 'assignedAt', 'targetDate']) if (k in y) y[k] = date(y[k]);
+      if (c === 'tasks' && 'status' in y) y.status = ['todo', 'done', 'waiting'].includes(y.status) ? y.status : 'todo';
+      if ('waitingSince' in y) y.waitingSince = date(y.waitingSince);
       if ('time' in y) y.time = /^\d{2}:\d{2}$/.test(y.time) ? y.time : null;
       for (const k of ['areaId', 'goalId', 'nextId']) if (y[k] && !SAFE_ID.test(y[k])) y[k] = null;
       if (Array.isArray(y.steps)) y.steps = y.steps.filter((st) => st && SAFE_ID.test(st.id)).map((st) => ({ id: st.id, title: str(st.title, 200), done: !!st.done }));

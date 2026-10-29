@@ -36,7 +36,9 @@ export const goalById = (id) => (id ? index('goals').get(id) : undefined);
 export const taskById = (id) => (id ? index('tasks').get(id) : undefined);
 export const isOpen = (t) => t.status !== 'done';
 export const openTasks = () => M('open', () => S().tasks.filter(isOpen));
-export const isOverdue = (t) => !!t.due && isOpen(t) && t.due < todayKey();
+export const isWaiting = (t) => t.status === 'waiting';
+// «بانتظار الاعتماد» لا يُحسب تأخيرًا عليك: الكرة عند غيرك، ومتابعته عبر موعد المتابعة.
+export const isOverdue = (t) => !!t.due && isOpen(t) && !isWaiting(t) && t.due < todayKey();
 export const isFocus = (t) => t.focusDate === todayKey();
 export const hasArea = (t) => !!t.areaId && !!areaById(t.areaId);
 
@@ -53,7 +55,7 @@ export const followDue = (t) => isOpen(t) && !!t.assignee && !!t.followUp && t.f
 
 export const alsoToday = () => M('also', () =>
   openTasks()
-    .filter((t) => !isFocus(t) && ((t.due && t.due <= todayKey()) || followDue(t)))
+    .filter((t) => !isFocus(t) && !isWaiting(t) && ((t.due && t.due <= todayKey()) || followDue(t)))
     .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || (a.time || '99').localeCompare(b.time || '99') || byPriority(a, b)));
 
 export const doneToday = () => M('doneToday', () =>
@@ -75,7 +77,7 @@ export function score(t) {
 }
 
 export const suggestions = (limit = 5) => M(`sug:${limit}`, () =>
-  openTasks().filter((t) => !isFocus(t)).sort((a, b) => score(b) - score(a) || byPriority(a, b)).slice(0, limit));
+  openTasks().filter((t) => !isFocus(t) && !isWaiting(t)).sort((a, b) => score(b) - score(a) || byPriority(a, b)).slice(0, limit));
 
 export const goalTasks = (g) => M(`gt:${g.id}`, () => S().tasks.filter((t) => t.goalId === g.id));
 export function goalProgress(g) {
@@ -149,6 +151,10 @@ export const counts = () => M('counts', () => {
   const open = openTasks();
   for (const k of Object.keys(SMART)) c[k] = open.filter(SMART[k].filter).length;
   for (const t of open) if (t.areaId) c[t.areaId] = (c[t.areaId] || 0) + 1;
+  c.all = open.length;
+  c.waiting = open.filter(isWaiting).length;
+  c.late = 0;
+  for (const t of open) if (isOverdue(t)) { c.late++; if (t.areaId) c[`late:${t.areaId}`] = (c[`late:${t.areaId}`] || 0) + 1; }
   return c;
 });
 
@@ -231,6 +237,15 @@ export function rollover() {
   const stale = S().tasks.filter((t) => t.focusDate && t.focusDate < today && isOpen(t));
   stale.forEach((t) => store.put('tasks', { ...t, focusDate: null, slips: (t.slips || 0) + 1 }));
   return stale.length;
+}
+
+export function setWaiting(id, on) {
+  const t = taskById(id);
+  if (!t || !isOpen(t)) return;
+  const patch = on ? { status: 'waiting', waitingSince: todayKey(), focusDate: null } : { status: 'todo', waitingSince: null };
+  // عند الانتظار نضمن موعد متابعة حتى لا تضيع المهمة: بعد ٣ أيام إن لم يكن لها موعد.
+  if (on && t.assignee && !t.followUp) patch.followUp = keyAdd(todayKey(), 3);
+  updateTask(id, patch);
 }
 
 export function followedUp(id, days = 3) { updateTask(id, { followUp: keyAdd(todayKey(), days) }); }

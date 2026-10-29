@@ -109,7 +109,7 @@ export const initials = (name = '') =>
 export function personColor(name = '') {
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 360;
-  return `hsl(${h} 45% 45%)`;
+  return `hsl(${h} 40% 32%)`; // داكن بما يكفي لنص أبيض (تباين ≥ ٤٫٥) في كل الدرجات
 }
 
 /* ───────── الوقت والمدة ───────── */

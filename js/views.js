@@ -9,16 +9,18 @@ import {
 import {
   S, MAX_FOCUS, areas, areaById, goalById, isOpen, openTasks, isOverdue, isFocus, hasArea, byPriority,
   focusToday, alsoToday, doneToday, suggestions, goalTasks, goalProgress, people, streak, SMART, listTasks, counts, followDue,
-  settings, todayLoad, isReviewDoc, taskFireAt,
+  settings, todayLoad, isReviewDoc, taskFireAt, isWaiting,
 } from './model.js';
+import { vAll } from './tasks.js';
 import { notify } from './notify.js';
 import { vDash } from './dash.js';
 
 export const ui = {
   route: 'today', param: null, sel: null, q: '', weekOffset: 0, drafts: {},
+  tf: { q: '', area: '', pri: '' },
   focusId: null, timer: { total: 25 * 60, left: 25 * 60, running: false, endAt: 0 }, justDone: null,
 };
-export const env = { installPrompt: null };
+export const env = { installPrompt: null, theme: document.documentElement.dataset.theme || 'exec' };
 
 /* ───────── أيقونات ───────── */
 /** I('star') خطية، I('star','d') بلونين، I('star','f') ممتلئة */
@@ -41,6 +43,7 @@ export function row(t, o = {}) {
   const meta = [];
   if (!o.hideArea && hasArea(t)) { const a = areaById(t.areaId); meta.push(`<span class="m">${areaMark(a, 'xs')}${esc(a.name)}</span>`); }
   if (!o.inToday && isFocus(t) && !done) meta.push(`<span class="m m-focus">${I('today')}ضمن الثلاثة</span>`);
+  if (isWaiting(t) && !done) meta.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
   if (t.due) meta.push(`<span class="m ${isOverdue(t) ? 'late' : t.due === todayKey() && !done ? 'soon' : ''}">${I(t.time ? 'clock' : 'cal')}${dueLabel(t)}</span>`);
   if (t.remind != null && t.due && !done) meta.push(`<span class="m" title="تذكير: ${REMINDS[t.remind] || ''}">${I('bell')}</span>`);
   if (t.est) meta.push(`<span class="m">${I('hourglass')}${fmtMin(t.est)}</span>`);
@@ -332,17 +335,26 @@ function vReview() {
 /* ═════════════ التنقل والقوائم (للجوال) والبحث ═════════════ */
 export function navItems() {
   const c = counts();
-  const item = (href, icon, label, cnt, cls = '') =>
-    `<a href="${href}" class="ni ${cls}" data-nav="${href}">${icon}<span>${label}</span>${cnt ? `<em>${n(cnt)}</em>` : ''}</a>`;
+  const item = (href, icon, label, cnt, cls = '', bad = false) =>
+    `<a href="${href}" class="ni ${cls}" data-nav="${href}">${icon}<span>${label}</span>${cnt ? `<em${bad ? ' class="bad"' : ''}>${n(cnt)}</em>` : ''}</a>`;
+  const grp = (t) => `<p class="ngrp">${t}</p>`;
   return {
-    smart: [
+    ctrl: [
       item('#/today', I('today', 'd'), 'اليوم', c.today, 'k-today'),
-      ...Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)),
+      item('#/dashboard', I('chart', 'd'), 'لوحة القيادة', 0),
+      item('#/all', I('list', 'd'), 'كل المهام', c.all),
+      item('#/all/late', I('fire', 'd'), 'المتأخرة', c.late, 'k-late', true),
+      item('#/all/waiting', I('hourglass', 'd'), 'بانتظار الاعتماد', c.waiting, 'k-wait'),
     ].join(''),
+    smart: Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)).join(''),
     views: [
-      item('#/dashboard', I('chart', 'd'), 'لوحة القيادة', 0), item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
+      item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
     ].join(''),
-    lists: areas().map((a) => `<a href="#/area/${a.id}" class="ni" data-nav="#/area/${a.id}">${areaMark(a, 'sm')}<span>${esc(a.name)}</span>${c[a.id] ? `<em>${n(c[a.id])}</em>` : ''}</a>`).join(''),
+    lists: areas().map((a) => {
+      const late = c[`late:${a.id}`] || 0;
+      return `<a href="#/area/${a.id}" class="ni" data-nav="#/area/${a.id}">${areaMark(a, 'sm')}<span>${esc(a.name)}</span>${late ? `<em class="bad" title="${n(late)} متأخرة">${n(late)}</em>` : c[a.id] ? `<em>${n(c[a.id])}</em>` : ''}</a>`;
+    }).join(''),
+    grp,
   };
 }
 
@@ -350,7 +362,7 @@ function vLists() {
   const nv = navItems();
   return `${vh('القوائم')}
     <label class="search big">${I('search')}<input type="search" id="q2" data-act="search" placeholder="ابحث في كل المهام" value="${esc(ui.q)}" /></label>
-    <nav class="hub">${nv.smart}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a><hr /><a href="#/settings" class="ni">${I('gear', 'd')}<span>الإعدادات</span></a></nav>`;
+    <nav class="hub">${nv.ctrl.replace(/<a href="#\/today"[^]*?<\/a>/, '')}<hr />${nv.smart}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a><hr /><a href="#/settings" class="ni">${I('gear', 'd')}<span>الإعدادات</span></a></nav>`;
 }
 
 function vSearch() {
@@ -425,6 +437,9 @@ function vSettings() {
 
   return `${vh('الإعدادات')}
   <div class="settings">
+    <section class="panel"><h2>${I('sparkle', 'i')}المظهر</h2>
+      <p class="note">التنفيذي: ورقي دافئ وفحمي أخضر ولمسة ذهبية. الكلاسيكي: ألوان الإصدار الثالث. الوضع الداكن يتبع جهازك.</p>
+      <div class="chips" style="margin-top:10px">${[['exec', 'التنفيذي'], ['green', 'الكلاسيكي الأخضر']].map(([k, l]) => `<button class="chip-b${env.theme === k ? ' on' : ''}" data-act="theme" data-v="${k}" aria-pressed="${env.theme === k}">${l}</button>`).join('')}</div></section>
     <section class="panel"><h2>${I('user', 'i')}اسمك</h2>
       <form class="arow" data-form="name"><input class="in" name="name" value="${esc(localName())}" maxlength="30" placeholder="يظهر في التحية" /><button class="btn sm" type="submit">حفظ</button></form></section>
     ${notifyPanel()}
@@ -479,7 +494,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: vGoals, review: vReview,
-  dashboard: () => vDash({ I, areaMark, row, vh }), lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */
@@ -524,6 +539,7 @@ export function pane(t) {
 
     <div class="pblk">
       <button class="prow${inFocus ? ' on' : ''}" data-act="${inFocus ? 'unfocus' : 'focus'}" data-id="${t.id}" ${!inFocus && full && !done ? 'disabled' : ''}>${I('today', 'd')}<span>${inFocus ? 'ضمن أولويات اليوم' : full ? 'أولويات اليوم ممتلئة (3)' : 'أضف إلى أولويات اليوم'}</span>${inFocus ? `<em>${I('x')}</em>` : ''}</button>
+      ${!done ? `<button class="prow${isWaiting(t) ? ' on wait' : ''}" data-act="waiting" data-id="${t.id}" aria-pressed="${isWaiting(t)}">${I('hourglass', 'd')}<span>${isWaiting(t) ? `<b>بانتظار الاعتماد</b><small>منذ ${t.waitingSince ? relDay(t.waitingSince) : 'اليوم'}. لا تُحسب متأخرة عليك. اضغط لإعادتها مفتوحة.</small>` : 'بانتظار اعتماد أو موافقة من غيري'}</span></button>` : ''}
       ${inFocus && !done ? `<button class="prow" data-act="start-focus" data-id="${t.id}">${I('timer', 'd')}<span>ابدأ وضع التركيز</span></button>` : ''}
     </div>
 

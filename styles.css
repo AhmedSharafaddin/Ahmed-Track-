@@ -698,3 +698,111 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
 .db-meter { height: 8px; border-radius: 4px; background: var(--accent-soft); overflow: hidden; }
 .db-meter i { display: block; height: 100%; background: var(--accent); border-radius: 4px 0 0 4px; }
 @media (prefers-reduced-motion: no-preference) { .db-col i, .db-meter i { transition: height .4s var(--ease), width .4s var(--ease); } }
+
+/* ───────── الثيم التنفيذي (افتراضي) ─────────
+   ورقي دافئ للسطح، فحمي أخضر للأزرار والنص المهم، والذهبي للتفاصيل الصغيرة فقط (المؤشر النشط، النجمة).
+   يُبدَّل من الإعدادات ← المظهر. يُحفظ في cc:theme ويُطبَّق قبل أول رسم. */
+:root[data-theme="exec"] {
+  --bg: #efece4;
+  --side: #e7e3d7;
+  --surface: #fbfaf6;
+  --surface-2: #f4f1e8;
+  --hover: #e9e5d9;
+  --ink: #1e2320;
+  --ink-2: #39403b;
+  --muted: #5d625b;
+  --faint: #8f9186;
+  --line: #ddd8ca;
+  --line-2: #cbc5b4;
+  --accent: #2c4a3e;
+  --accent-soft: #dfe5da;
+  --on-accent: #ffffff;
+  --gold: #866120;
+  --gold-soft: #f0e6cc;
+  --q1: #b03d2c;
+  --q2: #2c4a3e;
+  --q3: #9c6a14;
+  --q4: #75786e;
+  --danger: #ad3a2a;
+  --shadow: 0 1px 2px rgba(40, 34, 20, .05), 0 4px 14px rgba(40, 34, 20, .045);
+  --shadow-2: 0 2px 4px rgba(40, 34, 20, .05), 0 10px 28px rgba(40, 34, 20, .08);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="exec"] {
+    --bg: #141815;
+    --side: #101310;
+    --surface: #1c211d;
+    --surface-2: #222823;
+    --hover: #29302a;
+    --ink: #ece8dc;
+    --ink-2: #cbc7ba;
+    --muted: #9da192;
+    --faint: #6f7468;
+    --line: #2b322c;
+    --line-2: #39423a;
+    --accent: #8cc2a8;
+    --accent-soft: #22342b;
+    --on-accent: #0c1410;
+    --gold: #d6b26a;
+    --gold-soft: #2d2716;
+    --q1: #e8836f;
+    --q2: #8cc2a8;
+    --q3: #d6b26a;
+    --q4: #8a8f82;
+    --danger: #ec8473;
+  }
+}
+
+/* الشريط الجانبي المقسّم */
+.ngrp { margin: 14px 10px 4px; font-size: .72rem; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.ngrp:first-child { margin-top: 4px; }
+.ni { position: relative; }
+.ni[aria-current="page"]::before { content: ''; position: absolute; inset-inline-start: 0; top: 9px; bottom: 9px; width: 3px; border-radius: 3px; background: var(--gold); }
+.ni em.bad { min-width: 20px; height: 20px; padding: 0 6px; display: inline-grid; place-items: center; border-radius: 999px; background: var(--danger); color: #fff; font-weight: 600; font-size: .72rem; }
+.ni.k-late > .ic { color: var(--danger); }
+.ni.k-wait > .ic { color: var(--q3); }
+.brand span small { display: block; font-size: .7rem; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.newt { width: 100%; justify-content: center; margin: 2px 0 10px; }
+.hub .ngrp { margin-inline: 10px; }
+
+/* شاشة «كل المهام» */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.faint { color: var(--muted); }
+.tfilters { display: grid; grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.tf-q { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; padding: 0 11px; color: var(--muted); }
+.tf-q:focus-within { border-color: var(--accent); }
+.tf-q .ic { width: 17px; height: 17px; flex: none; }
+.tf-q input { border: 0; background: none; outline: none; flex: 1; min-width: 0; height: 38px; color: var(--ink); font: inherit; }
+.tfilters select.in { height: 40px; width: 100%; max-width: none; min-width: 0; }
+@media (min-width: 900px) { body[data-route="all"] .view { max-width: 1240px; } }
+.ttable td:nth-child(3), .ttable td:nth-child(7) { white-space: nowrap; }
+@media (max-width: 720px) { .tfilters { grid-template-columns: 1fr 1fr; } .tf-q { grid-column: 1 / -1; } }
+
+.tcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); overflow: auto; }
+.ttable { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.ttable thead th { position: sticky; top: 0; background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: .76rem; text-align: start; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ttable td, .ttable tbody th { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: start; vertical-align: middle; font-weight: 400; color: var(--ink-2); }
+.ttable tbody tr:last-child > * { border-bottom: 0; }
+.ttable tbody tr:hover { background: var(--hover); }
+.ttable tbody tr.sel { background: var(--accent-soft); }
+.ttable .c-ck { width: 44px; padding-inline-end: 0; }
+.ttable .c-t { width: 40%; min-width: 220px; }
+.ttable .c-t .tm { all: unset; cursor: pointer; display: block; color: var(--ink); font-weight: 500; line-height: 1.5; }
+.ttable .c-t .tm:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.ttable .c-a { width: 64px; text-align: end; }
+.ttable .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ttable tr.done .tm { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.ttable .m { font-size: .84rem; }
+.ttable .ck { width: 22px; height: 22px; }
+
+.pri { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .75rem; font-weight: 600; border: 1px solid; white-space: nowrap; }
+.pri.p-q1 { color: var(--q1); border-color: color-mix(in srgb, var(--q1) 35%, transparent); background: color-mix(in srgb, var(--q1) 9%, transparent); }
+.pri.p-q2 { color: var(--q2); border-color: color-mix(in srgb, var(--q2) 35%, transparent); background: color-mix(in srgb, var(--q2) 9%, transparent); }
+.pri.p-q3 { color: var(--q3); border-color: color-mix(in srgb, var(--q3) 35%, transparent); background: color-mix(in srgb, var(--q3) 10%, transparent); }
+.pri.p-q4 { color: var(--muted); border-color: var(--line-2); background: transparent; }
+.st { font-size: .82rem; white-space: nowrap; color: var(--ink-2); }
+.st.late { color: var(--danger); font-weight: 600; }
+.st.wait { color: var(--q3); font-weight: 600; }
+.st.done { color: var(--muted); }
+.m-wait { color: var(--q3); font-weight: 500; }
+.prow.wait { color: var(--q3); }

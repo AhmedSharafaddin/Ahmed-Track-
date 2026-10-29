@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="ar" dir="rtl" data-theme="exec">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>مركز القيادة</title>
   <meta name="description" content="مركز القيادة: أولويات اليوم، القوائم، المصفوفة، الأهداف والمراجعة الأسبوعية." />
-  <meta name="theme-color" content="#f4f5f2" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#efece4" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0f1519" media="(prefers-color-scheme: dark)" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -14,6 +14,8 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="manifest" href="manifest.webmanifest" />
+  <!-- الثيم قبل أول رسم حتى لا يومض لون آخر -->
+  <script>try{var t=localStorage.getItem('cc:theme');if(t==='green')document.documentElement.dataset.theme=t}catch(e){}</script>
 
   <!-- الأداء: الخط مستضاف هنا (ملف واحد لكل الأوزان) ويُحمَّل مبكرًا، ووحدات JS تُطلب بالتوازي لا بالتتابع -->
   <link rel="preload" href="fonts/readex-ar.woff2" as="font" type="font/woff2" crossorigin />
@@ -21,6 +23,7 @@
   <link rel="modulepreload" href="js/store.js" />
   <link rel="modulepreload" href="js/model.js" />
   <link rel="modulepreload" href="js/dash.js" />
+  <link rel="modulepreload" href="js/tasks.js" />
   <link rel="modulepreload" href="js/views.js" />
   <link rel="modulepreload" href="js/utils.js" />
   <link rel="modulepreload" href="js/config.js" />
@@ -33,8 +36,9 @@
     <aside class="side" aria-label="التنقل">
       <a class="brand" href="#/today" aria-label="مركز القيادة، اليوم">
         <img src="icons/icon.svg" alt="" width="32" height="32" />
-        <span>مركز القيادة</span>
+        <span>مركز القيادة<small>إدارة المهام والأولويات</small></span>
       </a>
+      <button class="btn primary newt" data-act="capture"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>مهمة جديدة</button>
       <label class="search">
         <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
         <input type="search" id="q" data-act="search" placeholder="بحث" aria-label="بحث في المهام" />
@@ -42,6 +46,7 @@
       <nav id="nav" class="nav"></nav>
       <div class="side-foot">
         <span id="sync" class="sync" role="status" aria-live="polite"></span>
+        <button class="ib" data-act="export" aria-label="نسخ احتياطي: تصدير كل البيانات إلى ملف" title="نسخ احتياطي"><svg class="ic" aria-hidden="true"><use href="#i-tray"/></svg></button>
         <a class="ib" href="#/settings" aria-label="الإعدادات" title="الإعدادات"><svg class="ic" aria-hidden="true"><use href="#d-gear"/></svg></a>
       </div>
     </aside>

@@ -2,7 +2,7 @@
 // الترتيب مقصود لمنع التشتت: رقم واحد كبير ← ما يحتاج قرارًا الآن ← الاتجاه ← التفاصيل.
 
 import { addDays, dateKey, keyAdd, todayKey, weekStart, n, esc, quadrant, fmtDate } from './utils.js';
-import { S, areas, areaById, isOpen, openTasks, isOverdue, followDue, byPriority, goalProgress, streak } from './model.js';
+import { S, areas, areaById, isOpen, openTasks, isOverdue, followDue, byPriority, goalProgress, streak, isWaiting } from './model.js';
 
 const DAYS = ['أحد', 'إثنين', 'ثلاثاء', 'أربعاء', 'خميس', 'جمعة', 'سبت'];
 const dayOf = (iso) => (iso ? iso.slice(0, 10) : '');
@@ -86,7 +86,7 @@ export function vDash(h) {
   return `${vh('لوحة القيادة', 'أرقام حقيقية من مهامك، ومرتبة لتعرف ماذا تفعل بعدها.', `<a class="btn" href="#/review">${I('chart', 'd')}المراجعة الأسبوعية</a>`)}
   <section class="db-hero" aria-label="ملخص الأسبوع">
     <div class="db-big"><b>${n(wk.length)}</b><div><span>مهمة منجزة هذا الأسبوع</span><em class="${dl.cls}">${dl.txt}</em></div></div>
-    <p class="db-lede">${lede}</p>
+    <p class="db-lede">${lede}${open.some(isWaiting) ? ` <a href="#/all/waiting">${n(open.filter(isWaiting).length)} بانتظار الاعتماد</a>.` : ''}</p>
   </section>
   <div class="db-tiles">
     ${tile(n(late.length), 'متأخرة', late.length ? 'bad' : 'ok', '#/list/planned')}
