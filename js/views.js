@@ -12,13 +12,14 @@ import {
   settings, todayLoad, isReviewDoc, taskFireAt, isWaiting,
 } from './model.js';
 import { vAll } from './tasks.js';
+import { vPyramid } from './pyramid.js';
 import { notify } from './notify.js';
 import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
 
 export const ui = {
   route: 'today', param: null, sel: null, q: '', weekOffset: 0, drafts: {},
-  tf: { q: '', area: '', pri: '' },
+  tf: { q: '', area: '', pri: '' }, paneMore: false,
   focusId: null, timer: { total: 25 * 60, left: 25 * 60, running: false, endAt: 0 }, justDone: null,
 };
 export const env = { installPrompt: null, theme: document.documentElement.dataset.theme || 'dar' };
@@ -247,38 +248,6 @@ function vMatrix() {
     <div class="matrix">${quads}</div>`;
 }
 
-/* ═════════════ الأهداف ═════════════ */
-function goalCard(g) {
-  const p = goalProgress(g);
-  const a = g.areaId ? areaById(g.areaId) : null;
-  const open = goalTasks(g).filter(isOpen).sort(byPriority).slice(0, 4);
-  const late = g.status === 'active' && g.targetDate && g.targetDate < todayKey();
-  const c = 2 * Math.PI * 17;
-  return `<article class="goal${g.status !== 'active' ? ' dim' : ''}" style="--c:${esc(a?.color || 'var(--accent)')}">
-    <header>
-      <span class="gmark">${g.emoji ? `<span class="gem">${esc(g.emoji)}</span>` : ''}<svg viewBox="0 0 40 40" aria-hidden="true"><circle class="trk" cx="20" cy="20" r="17"/><circle class="arc" cx="20" cy="20" r="17" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - p.pct / 100)).toFixed(1)}"/></svg>${g.emoji ? '' : `<b>${n(p.pct)}</b>`}</span>
-      <div class="gh"><h3>${esc(g.title)}</h3>
-        <p class="meta">${a ? `<span class="m">${areaMark(a, 'xs')}${esc(a.name)}</span>` : ''}${g.targetDate ? `<span class="m ${late ? 'late' : ''}">${I('cal')}${fmtDate(g.targetDate)}</span>` : ''}<span class="m">${n(p.pct)}%، ${n(p.done)} من ${n(p.total)}</span></p></div>
-      <button class="ib" data-act="edit-goal" data-id="${g.id}" aria-label="تعديل الهدف">${I('more')}</button>
-    </header>
-    ${g.why ? `<p class="why">${esc(g.why)}</p>` : ''}
-    ${rows(open, { hideGoal: true })}
-    ${g.status === 'active' ? `<button class="addstep" data-act="new-for-goal" data-id="${g.id}">${I('plus')}${p.total ? 'أضف خطوة' : 'قسّم الهدف إلى أول خطوة'}</button>` : ''}
-  </article>`;
-}
-
-function vGoals() {
-  const by = (a, b) => (a.targetDate || '9999').localeCompare(b.targetDate || '9999');
-  const active = S().goals.filter((g) => g.status === 'active' || !g.status).sort(by);
-  const paused = S().goals.filter((g) => g.status === 'paused').sort(by);
-  const done = S().goals.filter((g) => g.status === 'done').sort(by);
-  return `${vh('الأهداف', 'التقدّم يُحسب من المهام المنجزة في كل هدف.', `<button class="btn primary" data-act="new-goal">${I('plus')}هدف</button>`)}
-    ${active.length ? `<div class="goals">${active.map(goalCard).join('')}</div>` : `<div class="empty">${I('flag', 'd', 'big')}<p>لا أهداف نشطة. ابدأ بهدف واحد واضح لكل مجال، لا أكثر.</p></div>`}
-    ${active.length > 3 ? `<p class="warn">${I('scales', 'd')}أكثر من 3 أهداف نشطة يوزّع طاقتك. أجّل أحدها بوعي ليتقدّم الباقي.</p>` : ''}
-    ${paused.length ? `<details class="donebox"><summary>مؤجلة بوعي <span class="cnt">${n(paused.length)}</span></summary><div class="goals">${paused.map(goalCard).join('')}</div></details>` : ''}
-    ${done.length ? `<details class="donebox"><summary>تحققت <span class="cnt">${n(done.length)}</span></summary><div class="goals">${done.map(goalCard).join('')}</div></details>` : ''}`;
-}
-
 /* ═════════════ المراجعة ═════════════ */
 function vReview() {
   const ws = addDays(weekStart(), ui.weekOffset * 7);
@@ -351,7 +320,7 @@ export function navItems() {
     ].join(''),
     smart: Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)).join(''),
     views: [
-      item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
+      item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'هرم الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
     ].join(''),
     lists: areas().map((a) => {
       const late = c[`late:${a.id}`] || 0;
@@ -523,7 +492,7 @@ function vWidget() {
 }
 
 export const ROUTES = {
-  today: vToday, list: vList, area: vList, matrix: vMatrix, goals: vGoals, review: vReview,
+  today: vToday, list: vList, area: vList, matrix: vMatrix, goals: () => vPyramid({ I, vh, ui }), review: vReview,
   dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
@@ -543,11 +512,43 @@ export function pane(t) {
   const full = focusToday().length >= MAX_FOCUS;
   const ppl = people().map((p) => `<option value="${esc(p.name)}">`).join('');
   const fire = taskFireAt(t);
+  const a = hasArea(t) ? areaById(t.areaId) : null;
+  const g = t.goalId ? goalById(t.goalId) : null;
+  const meet = t.kind === 'meeting';
+  const more = ui.paneMore;
 
-  return `<div class="pane-in q-${q}${done ? ' done' : ''}" data-id="${t.id}">
+  // البومودورو: جلسات منجزة مقابل المقدّرة (٢٥ دقيقة للجلسة)
+  const planned = t.est ? Math.min(8, Math.max(1, Math.ceil(t.est / 25))) : 0;
+  const pomos = t.pomos || 0;
+  const dots = Array.from({ length: Math.max(planned, Math.min(pomos, 8)) }, (_, i) => `<i class="${i < pomos ? 'on' : ''}"></i>`).join('');
+  const pomoTxt = pomos || planned
+    ? `${n(pomos)}${planned ? ` من ${n(planned)}` : ''} ${pomos === 1 && !planned ? 'جلسة' : 'جلسات'}${t.spent ? ` · ${fmtMin(t.spent)}` : ''}`
+    : 'جلسة واحدة ٢٥ دقيقة تكفي لتبدأ';
+
+  // ملخص هادئ لما هو مضبوط فعلًا؛ التفاصيل كلها خلف زر واحد
+  const chips = [];
+  if (a) chips.push(`<span class="m">${areaMark(a, 'xs')}${esc(a.name)}</span>`);
+  if (g) chips.push(`<span class="m">${g.emoji ? `<span class="em">${esc(g.emoji)}</span>` : I('flag')}${esc(g.title)}</span>`);
+  if (t.important || t.urgent) chips.push(`<span class="m">${QUADRANTS[q].label}</span>`);
+  if (t.est) chips.push(`<span class="m">${I('hourglass')}${fmtMin(t.est)}</span>`);
+  if (t.repeat) chips.push(`<span class="m">${I('repeat')}${REPEATS[t.repeat]}</span>`);
+  if (t.assignee) chips.push(`<span class="m ${followDue(t) ? 'late' : ''}">${avatar(t.assignee)}${esc(t.assignee)}</span>`);
+  if (isWaiting(t)) chips.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
+  if (t.parked) chips.push(`<span class="m m-wait">${I('hourglass')}تنتظر دورها في الهدف</span>`);
+  if (t.notes) chips.push(`<span class="m">${I('note')}ملاحظات</span>`);
+
+  const meetBlock = meet ? `<div class="pblk meetblk">
+      <div class="prow static">${I('pin')}<span>المكان</span><input class="in sm" data-f="place" value="${esc(t.place || '')}" maxlength="120" placeholder="المكتب، أونلاين…" aria-label="مكان الاجتماع" /></div>
+      <div class="prow static">${I('clock')}<span>المدة</span><div class="seg sm">${[30, 60, 90, 120].map((m) => `<button class="${(t.duration || 60) === m ? 'on' : ''}" aria-pressed="${(t.duration || 60) === m}" data-act="set-dur" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
+      <button class="prow" data-act="ics" data-id="${t.id}">${I('calplus', 'i')}<span>أضف لتقويم الجوال<small>${t.due ? 'ملف تقويم بتنبيه قبل ١٥ دقيقة' : 'حدّد موعد الاجتماع أولًا'}</small></span></button>
+      ${t.minutes ? `<a class="prow" href="#/minutes/${t.id}">${I('doc', 'd')}<span><b>المحضر</b><small>${n(t.minutes.decisions?.length || 0)} قرار، ${n(t.minutes.actions?.length || 0)} مطلوب</small></span></a>` : ''}
+      <button class="prow" data-act="minutes" data-id="${t.id}">${I('mic', 'd')}<span>${t.minutes ? 'محضر جديد يحلّ محل الحالي' : 'سجّل محضر الاجتماع'}<small>تسجيل أو نص ← قرارات ومهام مُسندة</small></span></button>
+    </div>` : '';
+
+  return `<div class="pane-in calm q-${q}${done ? ' done' : ''}" data-id="${t.id}">
     <div class="pane-top">
       <button class="ib only-m" data-act="close-pane" aria-label="رجوع">${I('back')}</button>
-      <span class="quadtag">${QUADRANTS[q].label}</span>
+      <span class="quadtag">${meet ? 'اجتماع' : QUADRANTS[q].label}</span>
       <span class="spacer"></span>
       <button class="ib only-d" data-act="close-pane" aria-label="إغلاق التفاصيل">${I('x')}</button>
     </div>
@@ -559,53 +560,53 @@ export function pane(t) {
       <button class="star${t.important ? ' on' : ''}" data-act="star" data-id="${t.id}" aria-pressed="${!!t.important}" aria-label="مهم">${I('star', t.important ? 'f' : 'i')}</button>
     </div>
 
+    ${!done && !meet ? `<div class="pomo">
+      <div class="pomo-i"><span class="pomo-dots" aria-hidden="true">${dots || '<i></i>'}</span><span class="pomo-t">${pomoTxt}</span></div>
+      <button class="btn primary pomo-go" data-act="pomo-start" data-id="${t.id}">${I('play', 'f')}ابدأ تركيز ٢٥ د</button>
+    </div>` : ''}
+
+    <div class="pblk">
+      <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
+      ${!done ? `<button class="prow${inFocus ? ' on' : ''}" data-act="${inFocus ? 'unfocus' : 'focus'}" data-id="${t.id}" ${!inFocus && full ? 'disabled' : ''}>${I('today', 'd')}<span>${inFocus ? 'ضمن أولويات اليوم' : full ? 'أولويات اليوم ممتلئة (٣)' : 'أضف إلى أولويات اليوم'}</span>${inFocus ? `<em>${I('x')}</em>` : ''}</button>` : ''}
+    </div>
+
     <div class="psteps" id="steps">
       ${steps.map((s, i) => `<div class="step${s.done ? ' done' : ''}">
         <button class="ck sm" data-act="step-toggle" data-i="${i}" aria-label="إنجاز الخطوة">${I('check')}</button>
         <input class="sin" id="st-${s.id}" data-step="${i}" value="${esc(s.title)}" maxlength="160" aria-label="خطوة" />
         <button class="ib xs" data-act="step-del" data-i="${i}" aria-label="حذف الخطوة">${I('x')}</button></div>`).join('')}
-      <form class="step add" data-form="step"><span class="ck sm ghost">${I('plus')}</span><input class="sin" id="p-newstep" name="title" placeholder="${steps.length ? 'خطوة تالية' : 'أضف خطوة: أصغر شيء يمكن البدء به'}" maxlength="160" /></form>
+      <form class="step add" data-form="step"><span class="ck sm ghost">${I('plus')}</span><input class="sin" id="p-newstep" name="title" placeholder="${steps.length ? 'خطوة تالية' : 'أصغر خطوة تبدأ بها (اختياري)'}" maxlength="160" /></form>
     </div>
 
-    <div class="pblk">
-      <button class="prow${inFocus ? ' on' : ''}" data-act="${inFocus ? 'unfocus' : 'focus'}" data-id="${t.id}" ${!inFocus && full && !done ? 'disabled' : ''}>${I('today', 'd')}<span>${inFocus ? 'ضمن أولويات اليوم' : full ? 'أولويات اليوم ممتلئة (3)' : 'أضف إلى أولويات اليوم'}</span>${inFocus ? `<em>${I('x')}</em>` : ''}</button>
-      ${!done ? `<button class="prow${isWaiting(t) ? ' on wait' : ''}" data-act="waiting" data-id="${t.id}" aria-pressed="${isWaiting(t)}">${I('hourglass', 'd')}<span>${isWaiting(t) ? `<b>بانتظار الاعتماد</b><small>منذ ${t.waitingSince ? relDay(t.waitingSince) : 'اليوم'}. لا تُحسب متأخرة عليك. اضغط لإعادتها مفتوحة.</small>` : 'بانتظار اعتماد أو موافقة من غيري'}</span></button>` : ''}
-      ${inFocus && !done ? `<button class="prow" data-act="start-focus" data-id="${t.id}">${I('timer', 'd')}<span>ابدأ وضع التركيز</span></button>` : ''}
-    </div>
+    ${meetBlock}
 
-    <div class="pblk">
-      <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : t.due ? '<small>بلا تذكير</small>' : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
-      ${t.spent ? `<div class="prow static">${I('timer', 'd')}<span>الوقت الفعلي<small>${fmtMin(t.spent)} في وضع التركيز${t.est ? `، ${t.spent > t.est ? `أكثر من تقديرك بـ${fmtMin(t.spent - t.est)}` : 'ضمن تقديرك'}` : ''}</small></span></div>` : ''}
-      <div class="prow static">${I('hourglass', 'd')}<span>الوقت المتوقع</span>
-        <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" aria-pressed="${t.est === m}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
-      <div class="prow static">${I('repeat')}<span>التكرار</span><select class="in sm" data-f="repeat" aria-label="التكرار"><option value="">لا يتكرر</option>${Object.entries(REPEATS).map(([k, v]) => `<option value="${k}"${t.repeat === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div class="prow static">${I('grid', 'd')}<span>التصنيف</span>
-        <label class="chip-t"><input type="checkbox" data-f="important" ${t.important ? 'checked' : ''} /> مهم</label>
-        <label class="chip-t"><input type="checkbox" data-f="urgent" ${t.urgent ? 'checked' : ''} /> عاجل</label></div>
-    </div>
+    <button class="pmore${more ? ' open' : ''}" data-act="pane-more" aria-expanded="${more}" aria-controls="p-more">
+      <span class="pmore-l">${more ? 'إخفاء التفاصيل' : 'التفاصيل'}</span>
+      ${!more && chips.length ? `<span class="pmore-c">${chips.join('')}</span>` : ''}
+      ${I(more ? 'x' : 'down')}</button>
 
-    <div class="pblk meetblk">
-      <button class="prow${t.kind === 'meeting' ? ' on' : ''}" data-act="meeting-toggle" data-id="${t.id}" aria-pressed="${t.kind === 'meeting'}">${I('meet', 'd')}<span>${t.kind === 'meeting' ? '<b>اجتماع</b>' : 'هذا اجتماع'}</span></button>
-      ${t.kind === 'meeting' ? `
-      <div class="prow static">${I('pin')}<span>المكان</span><input class="in sm" data-f="place" value="${esc(t.place || '')}" maxlength="120" placeholder="المكتب، أونلاين…" aria-label="مكان الاجتماع" /></div>
-      <div class="prow static">${I('clock')}<span>المدة</span><div class="seg sm">${[30, 60, 90, 120].map((m) => `<button class="${(t.duration || 60) === m ? 'on' : ''}" aria-pressed="${(t.duration || 60) === m}" data-act="set-dur" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
-      <button class="prow" data-act="ics" data-id="${t.id}">${I('calplus', 'i')}<span>أضف لتقويم الجوال<small>${t.due ? 'ملف تقويم بتنبيه قبل ١٥ دقيقة' : 'حدّد موعد الاجتماع أولًا'}</small></span></button>
-      ${t.minutes ? `<a class="prow" href="#/minutes/${t.id}">${I('doc', 'd')}<span><b>المحضر</b><small>${n(t.minutes.decisions?.length || 0)} قرار، ${n(t.minutes.actions?.length || 0)} مطلوب</small></span></a>` : ''}
-      <button class="prow" data-act="minutes" data-id="${t.id}">${I('mic', 'd')}<span>${t.minutes ? 'محضر جديد يحلّ محل الحالي' : 'سجّل محضر الاجتماع'}<small>تسجيل أو نص ← قرارات ومهام مُسندة</small></span></button>` : ''}
-    </div>
-
-    <div class="pblk" id="assign">
-      <div class="prow static">${I('people', 'd')}<span>مُسندة إلى</span><input class="in sm" id="p-assignee" data-f="assignee" list="ppl" value="${esc(t.assignee || '')}" placeholder="أنا المسؤول" maxlength="40" /><datalist id="ppl">${ppl}</datalist></div>
-      ${t.assignee ? `<button class="prow" data-act="pick-follow">${I('bell', 'd')}<span><b>المتابعة القادمة: ${t.followUp ? relDay(t.followUp) : 'بلا موعد'}</b><small>أُسندت ${t.assignedAt ? `قبل ${daysWord(Math.max(0, daysBetween(t.assignedAt, todayKey())))}` : ''}${followDue(t) ? '، وحان موعد المتابعة' : ''}</small></span>${I('fwd')}</button>
-        <div class="hint"><button class="link" data-act="followed" data-id="${t.id}">تابعت اليوم</button></div>` : ''}
-    </div>
-
+    ${more ? `<div id="p-more" class="pmore-b">
     <div class="pblk">
       <div class="prow static">${I('list', 'd')}<span>المجال</span><select class="in sm" data-f="areaId" aria-label="المجال">${areaOptions(t.areaId)}</select></div>
       <div class="prow static">${I('flag', 'd')}<span>الهدف</span><select class="in sm" data-f="goalId" aria-label="الهدف">${goalOptions(t.goalId)}</select></div>
     </div>
-
+    <div class="pblk">
+      <div class="prow static">${I('hourglass', 'd')}<span>الوقت المتوقع</span>
+        <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" aria-pressed="${t.est === m}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
+      <div class="prow static">${I('grid', 'd')}<span>التصنيف</span>
+        <label class="chip-t"><input type="checkbox" data-f="important" ${t.important ? 'checked' : ''} /> مهم</label>
+        <label class="chip-t"><input type="checkbox" data-f="urgent" ${t.urgent ? 'checked' : ''} /> عاجل</label></div>
+      <div class="prow static">${I('repeat')}<span>التكرار</span><select class="in sm" data-f="repeat" aria-label="التكرار"><option value="">لا يتكرر</option>${Object.entries(REPEATS).map(([k, v]) => `<option value="${k}"${t.repeat === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    </div>
+    <div class="pblk" id="assign">
+      <div class="prow static">${I('people', 'd')}<span>مُسندة إلى</span><input class="in sm" id="p-assignee" data-f="assignee" list="ppl" value="${esc(t.assignee || '')}" placeholder="أنا المسؤول" maxlength="40" /><datalist id="ppl">${ppl}</datalist></div>
+      ${t.assignee ? `<button class="prow" data-act="pick-follow">${I('bell', 'd')}<span><b>المتابعة القادمة: ${t.followUp ? relDay(t.followUp) : 'بلا موعد'}</b><small>أُسندت ${t.assignedAt ? `قبل ${daysWord(Math.max(0, daysBetween(t.assignedAt, todayKey())))}` : ''}${followDue(t) ? '، وحان موعد المتابعة' : ''}</small></span>${I('fwd')}</button>
+        <div class="hint"><button class="link" data-act="followed" data-id="${t.id}">تابعت اليوم</button></div>` : ''}
+      ${!done ? `<button class="prow${isWaiting(t) ? ' on wait' : ''}" data-act="waiting" data-id="${t.id}" aria-pressed="${isWaiting(t)}">${I('hourglass', 'd')}<span>${isWaiting(t) ? `<b>بانتظار الاعتماد</b><small>منذ ${t.waitingSince ? relDay(t.waitingSince) : 'اليوم'}. لا تُحسب متأخرة عليك.</small>` : 'بانتظار اعتماد أو موافقة من غيري'}</span></button>` : ''}
+      <button class="prow${meet ? ' on' : ''}" data-act="meeting-toggle" data-id="${t.id}" aria-pressed="${meet}">${I('meet', 'd')}<span>${meet ? 'اجتماع (اضغط لإلغاء)' : 'هذا اجتماع'}</span></button>
+    </div>
     <textarea class="pnotes" id="p-notes" data-f="notes" maxlength="4000" placeholder="ملاحظات، روابط، تفاصيل…" aria-label="ملاحظات">${esc(t.notes || '')}</textarea>
+    </div>` : ''}
 
     <footer class="pfoot"><span>${done ? `أُنجزت ${fmtDate((t.completedAt || '').slice(0, 10))}` : t.createdAt ? `أُنشئت ${fmtDate(t.createdAt.slice(0, 10))}` : ''}</span>
       <button class="ib" data-act="del-task" data-id="${t.id}" aria-label="حذف المهمة" title="حذف">${I('trash')}</button></footer>
@@ -639,18 +640,20 @@ export function focusView(t) {
   const T = ui.timer;
   const pct = 1 - T.left / T.total;
   const c = 2 * Math.PI * 92;
-  return `<div class="fx-in">
+  const brk = T.mode === 'break';
+  const sess = (t.pomos || 0) + (brk ? 0 : 1);
+  return `<div class="fx-in${brk ? ' fx-break' : ''}">
     <button class="ib fx-close" data-act="end-focus" aria-label="إنهاء التركيز">${I('x')}</button>
-    <p class="fx-lbl">ركّز على شيء واحد</p>
+    <p class="fx-lbl">${brk ? 'استراحة. قم وتحرّك واشرب ماءً' : `ركّز على شيء واحد · الجلسة ${n(sess)}`}</p>
     <h2 class="fx-title">${esc(t.title)}</h2>
     <div class="fx-clock"><svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="92" class="trk"/><circle cx="100" cy="100" r="92" class="arc" id="fx-arc" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - pct)).toFixed(1)}"/></svg>
       <b id="fx-time">${fmtClock(T.left)}</b></div>
     <div class="fx-ctl">
-      ${[15, 25, 50].map((m) => `<button class="chip-b${T.total === m * 60 ? ' on' : ''}" aria-pressed="${T.total === m * 60}" data-act="fx-len" data-m="${m}">${n(m)} د</button>`).join('')}
+      ${brk ? `<button class="btn" data-act="fx-skip">تخطَّ الاستراحة</button>` : [15, 25, 50].map((m) => `<button class="chip-b${T.total === m * 60 ? ' on' : ''}" aria-pressed="${T.total === m * 60}" data-act="fx-len" data-m="${m}">${n(m)} د</button>`).join('')}
       <button class="btn primary fx-go" data-act="fx-toggle">${T.running ? `${I('pause')}إيقاف مؤقت` : `${I('play', 'f')}${T.left < T.total ? 'استئناف' : 'ابدأ'}`}</button>
     </div>
-    ${steps.length ? `<ul class="fx-steps">${steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><button class="ck sm" data-act="step-toggle" data-i="${i}" data-id="${t.id}">${I('check')}</button><span>${esc(s.title)}</span></li>`).join('')}</ul>` : ''}
-    <form class="fx-catch" data-form="catch"><label>${I('brain', 'd')}<input name="title" id="fx-catch" maxlength="200" placeholder="فكرة طارئة؟ اكتبها هنا لتذهب للوارد، وعد للتركيز" /></label></form>
+    ${steps.length && !brk ? `<ul class="fx-steps">${steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><button class="ck sm" data-act="step-toggle" data-i="${i}" data-id="${t.id}">${I('check')}</button><span>${esc(s.title)}</span></li>`).join('')}</ul>` : ''}
+    <form class="fx-catch" data-form="catch"${brk ? ' hidden' : ''}><label>${I('brain', 'd')}<input name="title" id="fx-catch" maxlength="200" placeholder="فكرة طارئة؟ اكتبها هنا لتذهب للوارد، وعد للتركيز" /></label></form>
     <button class="btn fx-done" data-act="toggle" data-id="${t.id}" data-end="1">${I('check')}أنجزتها</button>
   </div>`;
 }

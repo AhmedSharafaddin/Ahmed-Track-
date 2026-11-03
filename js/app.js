@@ -7,7 +7,7 @@ import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay, isDateKey } from './uti
 import {
   S, areas, areaById, goalById, taskById, isOpen, createTask, updateTask, toggleTask, focusPatch, FULL_MSG,
   rollover, followedUp, parseQuick, convertSetupFile, settings, saveSettings, snooze, dayLoads,
-  setWaiting,
+  setWaiting, values, saveValues, goalLevel, MAX_VALUES, MAX_LONG,
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
@@ -188,6 +188,7 @@ function openCapture(ctx = {}, title = 'مهمة جديدة') {
 
 function openGoalDialog(g = {}) {
   const isNew = !g.id;
+  const lvl = g.id ? goalLevel(g) : (g.level || 'long');
   dlg.classList.remove('commit-dlg');
   const opt = (sel) => '<option value="">بدون مجال</option>' + areas().map((a) => `<option value="${a.id}"${a.id === sel ? ' selected' : ''}>${a.emoji ? `${esc(a.emoji)} ` : ''}${esc(a.name)}</option>`).join('');
   dlg.innerHTML = `<form data-form="goal" data-id="${g.id || ''}" class="stack">
@@ -203,6 +204,13 @@ function openGoalDialog(g = {}) {
       <div class="fld"><span>الموعد المستهدف</span><input type="hidden" name="targetDate" value="${esc(g.targetDate || '')}" />
         <button type="button" class="in pick-btn" data-act="goal-date">${I('cal')}<span>${g.targetDate ? relDay(g.targetDate) : 'اختر تاريخًا'}</span></button></div>
     </div>
+    <div class="two">
+      <label class="fld"><span>نوع الهدف</span><select class="in" name="level" data-goal-level>
+        <option value="long"${lvl === 'long' ? ' selected' : ''}>بعيد (سنة فأكثر)</option>
+        <option value="mid"${lvl === 'mid' ? ' selected' : ''}>قريب (٣–٦ أشهر)</option></select></label>
+      <label class="fld" data-lv="long"${lvl === 'long' ? '' : ' hidden'}><span>القيمة التي يخدمها</span><select class="in" name="valueId"><option value="">بلا قيمة</option>${values().map((v) => `<option value="${v.id}"${v.id === g.valueId ? ' selected' : ''}>${v.emoji ? `${esc(v.emoji)} ` : ''}${esc(v.text)}</option>`).join('')}</select></label>
+      <label class="fld" data-lv="mid"${lvl === 'mid' ? '' : ' hidden'}><span>الهدف البعيد الذي يخدمه</span><select class="in" name="parentId"><option value="">بلا هدف بعيد</option>${S().goals.filter((x) => goalLevel(x) === 'long' && x.id !== g.id && x.status !== 'done').map((x) => `<option value="${x.id}"${x.id === g.parentId ? ' selected' : ''}>${esc(x.title)}</option>`).join('')}</select></label>
+    </div>
     <label class="fld"><span>الحالة</span><select class="in" name="status">
       <option value="active"${!g.status || g.status === 'active' ? ' selected' : ''}>نشط</option>
       <option value="paused"${g.status === 'paused' ? ' selected' : ''}>مؤجل بوعي</option>
@@ -212,6 +220,20 @@ function openGoalDialog(g = {}) {
   </form>`;
   dlg.showModal();
   setTimeout(() => $('[name=title]', dlg)?.focus(), 30);
+}
+
+const valueRow = (v = {}) => `<div class="val-row"><input type="hidden" name="vid" value="${esc(v.id)}" /><input class="in emo" name="vemoji" value="${esc(v.emoji || '')}" maxlength="4" placeholder="◆" aria-label="رمز القيمة" /><input class="in" name="vtext" value="${esc(v.text || '')}" maxlength="60" placeholder="قيمة تهمّك (مثلًا: الأسرة)" aria-label="القيمة" /><button type="button" class="ib xs" data-act="value-del" aria-label="حذف القيمة">${I('x')}</button></div>`;
+function openValuesDialog() {
+  dlg.classList.remove('commit-dlg');
+  const vs = values();
+  dlg.innerHTML = `<form data-form="values" class="stack">
+    <div class="cap-h"><h2>قيمك</h2><button class="ib" type="button" data-act="close" aria-label="إغلاق">${I('x')}</button></div>
+    <p class="note">أساس الهرم: ما الذي يهمك فعلًا؟ من ٣ إلى ${n(MAX_VALUES)} قيم قصيرة. الأهداف تُبنى فوقها.</p>
+    <div class="val-rows">${(vs.length ? vs : [{ id: uid() }, { id: uid() }, { id: uid() }]).map(valueRow).join('')}</div>
+    <div class="row"><button class="btn" type="button" data-act="value-add"${vs.length >= MAX_VALUES ? ' hidden' : ''}>${I('plus')}قيمة</button><span class="spacer"></span><button class="btn primary" type="submit">حفظ</button></div>
+  </form>`;
+  dlg.showModal();
+  setTimeout(() => $('.val-row input[name=vtext]', dlg)?.focus(), 30);
 }
 
 /** منتقي التاريخ والرمز يُحمَّل عند أول استخدام فقط (لا يثقل الفتح). */
@@ -236,11 +258,20 @@ function logFocus() {
   updateTask(t.id, { spent: (t.spent || 0) + min, focusLog: log });
 }
 
-function startFocus(id) {
+const POMO = 25 * 60;
+function startFocus(id, auto = false) {
   if (ui.focusId && ui.focusId !== id) logFocus();
   ui.focusId = id;
-  ui.timer = { total: ui.timer.total, left: ui.timer.total, running: false, endAt: 0 };
+  const total = auto ? POMO : (ui.timer.mode === 'break' ? POMO : ui.timer.total);
+  ui.timer = { total, left: total, running: false, endAt: 0, mode: 'work' };
+  if (auto) runTimer();
   render();
+}
+function runTimer() {
+  const T = ui.timer;
+  if (T.left === 0) T.left = T.total;
+  T.endAt = Date.now() + T.left * 1000; T.runFrom = Date.now(); T.running = true;
+  clearInterval(fxTick); fxTick = setInterval(tick, 500);
 }
 function tick() {
   const T = ui.timer;
@@ -252,13 +283,26 @@ function tick() {
   if (arc) { const c = 2 * Math.PI * 92; arc.style.strokeDashoffset = (c * (T.left / T.total)).toFixed(1); }
   document.title = `${fmtClock(T.left)} · تركيز`;
   if (T.left === 0) {
-    logFocus();
     T.running = false;
     clearInterval(fxTick);
     document.title = 'مركز القيادة';
     chime();
-    toast('انتهت الجلسة. خذ خمس دقائق استراحة ثم عد.');
     last.fx = '';
+    if (T.mode === 'break') {
+      T.runFrom = 0; T.mode = 'work'; T.total = POMO; T.left = POMO;
+      toast('انتهت الاستراحة. جلسة جديدة؟');
+    } else {
+      logFocus();
+      const t = taskById(ui.focusId);
+      const long = t && T.total >= 20 * 60; // الجلسات القصيرة لا تُحسب بومودورو
+      if (long) {
+        const p = (t.pomos || 0) + 1;
+        updateTask(t.id, { pomos: p });
+        const rest = p % 4 === 0 ? 15 : 5;
+        T.mode = 'break'; T.total = rest * 60; T.left = T.total;
+        toast(p % 4 === 0 ? 'أربع جلسات! استرح ١٥ دقيقة.' : `جلسة ${n(p)} اكتملت. استرح ٥ دقائق.`);
+      } else toast('انتهت الجلسة.');
+    }
     render();
   }
 }
@@ -276,7 +320,7 @@ function chime() {
   } catch {}
 }
 function endFocus() {
-  if (ui.timer.running) logFocus();
+  if (ui.timer.running && ui.timer.mode !== 'break') logFocus();
   ui.focusId = null;
   ui.timer.running = false;
   clearInterval(fxTick);
@@ -387,12 +431,18 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'start-focus': startFocus(id); break;
+    case 'pomo-start': startFocus(id, true); break;
+    case 'pane-more': ui.paneMore = !ui.paneMore; forcePane = true; render(); break;
+    case 'fx-skip': { const T = ui.timer; clearInterval(fxTick); T.running = false; T.mode = 'work'; T.total = POMO; T.left = POMO; T.runFrom = 0; document.title = 'مركز القيادة'; render(); break; }
+    case 'edit-values': openValuesDialog(); break;
+    case 'value-add': { const f = el.closest('form'); if (f.querySelectorAll('.val-row').length < MAX_VALUES) { f.querySelector('.val-rows').insertAdjacentHTML('beforeend', valueRow({ id: uid() })); f.querySelector('.val-row:last-child input')?.focus(); } if (f.querySelectorAll('.val-row').length >= MAX_VALUES) el.hidden = true; break; }
+    case 'value-del': { const f = el.closest('form'); el.closest('.val-row').remove(); f.querySelector('[data-act=value-add]').hidden = false; break; }
     case 'end-focus': endFocus(); break;
     case 'fx-len': if (!ui.timer.running) { const s = +el.dataset.m * 60; ui.timer.total = s; ui.timer.left = s; render(); } break;
     case 'fx-toggle': {
       const T = ui.timer;
-      if (T.running) { tick(); logFocus(); T.running = false; clearInterval(fxTick); document.title = 'مركز القيادة'; }
-      else { if (T.left === 0) T.left = T.total; T.endAt = Date.now() + T.left * 1000; T.runFrom = Date.now(); T.running = true; clearInterval(fxTick); fxTick = setInterval(tick, 500); }
+      if (T.running) { tick(); if (T.mode !== 'break') logFocus(); T.running = false; clearInterval(fxTick); document.title = 'مركز القيادة'; }
+      else runTimer();
       render();
       break;
     }
@@ -402,7 +452,7 @@ document.addEventListener('click', (e) => {
     case 'capture': openCapture(ui.route === 'area' ? { area: ui.param } : ui.route === 'list' ? { list: ui.param } : ui.route === 'today' ? { ctx: 'today' } : {}); break;
     case 'new-in-quad': openCapture({ q: el.dataset.q }, 'مهمة في هذا المربع'); break;
     case 'new-for-goal': openCapture({ goal: el.dataset.id }, `خطوة لـ«${goalById(el.dataset.id)?.title || ''}»`); break; // يُهرَّب داخل openCapture
-    case 'new-goal': openGoalDialog({}); break;
+    case 'new-goal': openGoalDialog({ parentId: el.dataset.parent || null, level: el.dataset.level || (el.dataset.parent ? 'mid' : null), valueId: el.dataset.value || null }); break;
     case 'edit-goal': openGoalDialog(goalById(el.dataset.id)); break;
     case 'goal-emoji': {
       const form = el.closest('form');
@@ -487,6 +537,11 @@ document.addEventListener('change', (e) => {
   if (el.dataset.tf) {
     if (el.dataset.tf === 'status') { location.hash = el.value === 'open' ? '#/all' : `#/all/${el.value}`; return; }
     if (el.dataset.tf !== 'q') { ui.tf[el.dataset.tf] = el.value; render(); }
+    return;
+  }
+  if (el.dataset.goalLevel !== undefined) {
+    const f = el.closest('form');
+    f.querySelectorAll('[data-lv]').forEach((x) => { x.hidden = x.dataset.lv !== el.value; });
     return;
   }
   if (el.dataset.set) { saveSettings({ [el.dataset.set]: el.value || null }); return; }
@@ -595,8 +650,22 @@ document.addEventListener('submit', (e) => {
       const old = id ? goalById(id) : {};
       const title = get('title');
       if (!title) return;
-      store.put('goals', { id: id || uid(), ...old, title, emoji: get('emoji') || null, why: get('why'), areaId: get('areaId') || null, targetDate: get('targetDate') || null, status: get('status') || 'active' });
+      const level = get('level') === 'mid' ? 'mid' : 'long';
+      const parentId = level === 'mid' ? get('parentId') || null : null;
+      const parent = parentId ? goalById(parentId) : null;
+      const valueId = level === 'long' ? get('valueId') || null : null;
+      const status = get('status') || 'active';
+      const nLong = S().goals.filter((x) => x.id !== id && x.status === 'active' && goalLevel(x) === 'long').length;
+      store.put('goals', { id: id || uid(), ...old, title, emoji: get('emoji') || null, why: get('why'), areaId: get('areaId') || parent?.areaId || null, targetDate: get('targetDate') || null, status, level, parentId, valueId });
       dlg.close();
+      if (level === 'long' && status === 'active' && nLong >= MAX_LONG) toast('عندك أكثر من ثلاثة أهداف بعيدة نشطة. فكّر في تأجيل أحدها بوعي.');
+      break;
+    }
+    case 'values': {
+      const ids = fd.getAll('vid'); const tx = fd.getAll('vtext'); const em = fd.getAll('vemoji');
+      saveValues(ids.map((id, i) => ({ id: SAFE_ID.test(id) ? id : uid(), text: tx[i], emoji: em[i] })));
+      dlg.close();
+      toast('حُفظت قيمك.');
       break;
     }
     case 'review': {
@@ -756,6 +825,13 @@ function sanitize(data) {
       if ('name' in y) y.name = str(y.name, 80);
       if (c === 'areas') y.color = /^#[0-9a-f]{6}$/i.test(y.color) ? y.color : '#2f9474';
       for (const k of ['due', 'followUp', 'focusDate', 'assignedAt', 'targetDate']) if (k in y) y[k] = date(y[k]);
+      if (c === 'goals') {
+        if ('level' in y) y.level = y.level === 'mid' ? 'mid' : 'long';
+        for (const k of ['parentId', 'valueId']) if (y[k] && !SAFE_ID.test(y[k])) y[k] = null;
+      }
+      if (c === 'reviews' && Array.isArray(y.values)) y.values = y.values.filter((v) => v && SAFE_ID.test(v.id || '')).slice(0, MAX_VALUES).map((v) => ({ id: v.id, text: str(v.text, 60), emoji: v.emoji ? str(v.emoji, 8) : null }));
+      if (c === 'tasks' && 'parked' in y) y.parked = !!y.parked;
+      if (c === 'tasks' && 'pomos' in y) y.pomos = Number.isFinite(y.pomos) && y.pomos >= 0 && y.pomos < 1e4 ? Math.round(y.pomos) : 0;
       if (c === 'tasks' && 'status' in y) y.status = ['todo', 'done', 'waiting'].includes(y.status) ? y.status : 'todo';
       if ('waitingSince' in y) y.waitingSince = date(y.waitingSince);
       if (c === 'tasks') {

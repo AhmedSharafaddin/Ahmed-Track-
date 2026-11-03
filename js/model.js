@@ -35,7 +35,9 @@ export const areaById = (id) => (id ? index('areas').get(id) : undefined);
 export const goalById = (id) => (id ? index('goals').get(id) : undefined);
 export const taskById = (id) => (id ? index('tasks').get(id) : undefined);
 export const isOpen = (t) => t.status !== 'done';
-export const openTasks = () => M('open', () => S().tasks.filter(isOpen));
+/** «في انتظار الهدف»: مهمة مفتوحة أُضيفت لهدف ممتلئ، مخفية من كل القوائم حتى يتحرر مكان. */
+export const isParked = (t) => !!t.parked && isOpen(t);
+export const openTasks = () => M('open', () => S().tasks.filter((t) => isOpen(t) && !t.parked));
 export const isWaiting = (t) => t.status === 'waiting';
 // «بانتظار الاعتماد» لا يُحسب تأخيرًا عليك: الكرة عند غيرك، ومتابعته عبر موعد المتابعة.
 export const isOverdue = (t) => !!t.due && isOpen(t) && !isWaiting(t) && t.due < todayKey();
@@ -80,6 +82,34 @@ export const suggestions = (limit = 5) => M(`sug:${limit}`, () =>
   openTasks().filter((t) => !isFocus(t) && !isWaiting(t)).sort((a, b) => score(b) - score(a) || byPriority(a, b)).slice(0, limit));
 
 export const goalTasks = (g) => M(`gt:${g.id}`, () => S().tasks.filter((t) => t.goalId === g.id));
+
+/* ───────── هرم فرانكلين ─────────
+   القيم (الأساس) ← أهداف بعيدة ← أهداف قريبة ← مهام اليوم (القمة).
+   حدود صارمة تمنع الزحمة: ٥ قيم، ٣ أهداف بعيدة نشطة، و٣ خطوات مفتوحة لكل هدف — والزائد ينتظر دوره. */
+export const MAX_VALUES = 5;
+export const MAX_LONG = 3;
+export const MAX_GOAL_OPEN = 3;
+export const goalLevel = (g) => (g?.level === 'long' ? 'long' : 'mid');
+export const isActiveGoal = (g) => g.status === 'active' || !g.status;
+export const values = () => M('values', () => (Array.isArray(settings().values) ? settings().values : []).filter((v) => v && v.id && v.text).slice(0, MAX_VALUES));
+export const goalOpen = (g) => M(`go:${g.id}`, () => goalTasks(g).filter((t) => isOpen(t) && !t.parked).sort(byPriority));
+export const goalParked = (g) => M(`gp:${g.id}`, () => goalTasks(g).filter(isParked).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '')));
+export const childGoals = (g) => M(`gc:${g.id}`, () => S().goals.filter((x) => x.parentId === g.id && goalLevel(x) === 'mid'));
+/** تقدّم الهدف البعيد = مهامه ومهام أهدافه القريبة معًا. */
+export function treeProgress(g) {
+  const ids = new Set([g.id, ...childGoals(g).map((x) => x.id)]);
+  const ts = S().tasks.filter((t) => ids.has(t.goalId));
+  const done = ts.filter((t) => !isOpen(t)).length;
+  return { done, total: ts.length, pct: ts.length ? Math.round((done / ts.length) * 100) : 0 };
+}
+/** يضع المهمة الجديدة في انتظار الهدف إن كان ممتلئًا. يُرجع true إن رُكنت. */
+export function parkIfFull(fields) {
+  const g = fields.goalId ? goalById(fields.goalId) : null;
+  if (!g || goalOpen(g).length < MAX_GOAL_OPEN) return false;
+  fields.parked = true;
+  fields.focusDate = null;
+  return true;
+}
 export function goalProgress(g) {
   const ts = goalTasks(g);
   const done = ts.filter((t) => !isOpen(t)).length;
@@ -102,6 +132,13 @@ export const streak = () => M('streak', () => {
 
 /* ───────── الإعدادات المتزامنة ───────── */
 export const SETTINGS_ID = '_settings';
+/** القيم (أساس الهرم): حتى ٥، نص قصير + رمز اختياري. */
+export function saveValues(list) {
+  const seen = new Set();
+  const clean = list.map((v) => ({ id: v.id, text: String(v.text || '').trim().slice(0, 60), emoji: v.emoji ? String(v.emoji).slice(0, 8) : null }))
+    .filter((v) => v.text && !seen.has(v.id) && seen.add(v.id)).slice(0, MAX_VALUES);
+  return saveSettings({ values: clean });
+}
 export const DEFAULT_SETTINGS = { name: '', morning: '08:30', evening: '17:30', capacity: 6 };
 export const settings = () => M('settings', () => ({ ...DEFAULT_SETTINGS, ...(S().reviews.find((r) => r.id === SETTINGS_ID) || {}) }));
 export function saveSettings(patch) {
@@ -142,8 +179,8 @@ export const SMART = {
 };
 
 export const listTasks = (key) => M(`list:${key}`, () => {
-  if (SMART[key]) return S().tasks.filter(SMART[key].filter);
-  return S().tasks.filter((t) => t.areaId === key);
+  if (SMART[key]) return S().tasks.filter((t) => !isParked(t) && SMART[key].filter(t));
+  return S().tasks.filter((t) => !isParked(t) && t.areaId === key);
 });
 
 export const counts = () => M('counts', () => {
@@ -160,6 +197,7 @@ export const counts = () => M('counts', () => {
 
 /* ───────── عمليات ───────── */
 export function createTask(fields) {
+  if (fields.goalId && !fields.parked) parkIfFull(fields); // حدّ الخطوات المفتوحة لكل هدف
   return store.put('tasks', {
     id: uid(), title: '', notes: '', areaId: null, goalId: null,
     urgent: false, important: false, due: null, status: 'todo',
@@ -216,6 +254,15 @@ export function toggleTask(id) {
     patch.nextId = null;
   }
   updateTask(id, patch);
+
+  // تحرر مكان في الهدف ⇒ تظهر أقدم خطوة منتظرة تلقائيًا
+  let next = '';
+  if (done && t.goalId && !t.parked) {
+    const g = goalById(t.goalId);
+    const nx = g ? goalParked(g)[0] : null;
+    if (nx && goalOpen(g).length < MAX_GOAL_OPEN) { updateTask(nx.id, { parked: false }); next = ` ظهرت الخطوة التالية للهدف: «${nx.title}».`; }
+  }
+  if (next) return `أحسنت.${next}`;
 
   if (done && isFocus(t)) {
     const left = focusToday().filter((x) => isOpen(x) && x.id !== id).length;
