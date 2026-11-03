@@ -1014,3 +1014,9 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
   .pyr-l { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
   .pyr-v { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
 }
+/* نصوص تقع مباشرة على خلفية اللوحة الداكنة في ثيم «الدار» (سطح المكتب) */
+@media (min-width: 900px) {
+  :root[data-theme="dar"] .pane .pmore, :root[data-theme="dar"] .pane .pfoot, :root[data-theme="dar"] .pane .pane-top .ib { color: #c9d4d1; }
+  :root[data-theme="dar"] .pane .pmore:hover { background: rgba(255, 255, 255, .08); }
+  :root[data-theme="dar"] .pane .quadtag { color: #f1ebdc; background: rgba(255, 255, 255, .12); }
+}
