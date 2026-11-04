@@ -605,9 +605,9 @@ export function pane(t) {
     <div class="psteps" id="steps">
       ${steps.map((s, i) => `<div class="step${s.done ? ' done' : ''}">
         <button class="ck sm" data-act="step-toggle" data-i="${i}" aria-label="إنجاز الخطوة">${I('check')}</button>
-        <input class="sin" id="st-${s.id}" data-step="${i}" value="${esc(s.title)}" maxlength="160" aria-label="خطوة" />
+        <textarea class="sin" id="st-${s.id}" data-step="${i}" rows="1" maxlength="400" aria-label="خطوة">${esc(s.title)}</textarea>
         <button class="ib xs" data-act="step-del" data-i="${i}" aria-label="حذف الخطوة">${I('x')}</button></div>`).join('')}
-      <form class="step add" data-form="step"><span class="ck sm ghost">${I('plus')}</span><input class="sin" id="p-newstep" name="title" placeholder="${steps.length ? 'خطوة تالية' : 'أصغر خطوة تبدأ بها (اختياري)'}" maxlength="160" /></form>
+      <form class="step add" data-form="step"><span class="ck sm ghost">${I('plus')}</span><textarea class="sin" id="p-newstep" name="title" rows="1" placeholder="${steps.length ? 'خطوة تالية' : 'أصغر خطوة تبدأ بها (اختياري)'}" maxlength="400"></textarea></form>
     </div>
 
     ${meetBlock}

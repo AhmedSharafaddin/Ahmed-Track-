@@ -77,7 +77,7 @@ function paint() {
   const typing = active && paneEl.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && paneEl.dataset.id === ui.sel;
   if (!typing || forcePane) {
     const ph = pane(t);
-    if (ph !== last.pane) { paneEl.innerHTML = ph; last.pane = ph; autosize($('#p-title')); }
+    if (ph !== last.pane) { paneEl.innerHTML = ph; last.pane = ph; autosize($('#p-title')); paneEl.querySelectorAll('textarea.sin').forEach(autosize); }
     paneEl.dataset.id = t ? t.id : '';
   }
   forcePane = false;
@@ -567,7 +567,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset?.draft) ui.drafts[el.dataset.draft] = el.value;
-  if (el.classList.contains('ptitle')) autosize(el);
+  if (el.classList.contains('ptitle') || el.classList.contains('sin')) autosize(el);
   if (el.classList.contains('qa-in')) {
     const box = el.closest('form')?.querySelector('.qa-tokens');
     if (box) {
@@ -723,6 +723,12 @@ dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
 
 document.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
+  // الخطوات حقول نصية متعددة الأسطر تنمو مع الكتابة؛ Enter يحفظ ولا يضيف سطرًا (Shift+Enter سطر جديد)
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && tag === 'TEXTAREA' && e.target.classList.contains('sin')) {
+    e.preventDefault();
+    if (e.target.id === 'p-newstep') e.target.form?.requestSubmit(); else e.target.blur();
+    return;
+  }
   if (e.key === 'Escape') {
     if (ui.focusId) { endFocus(); return; }
     if (document.querySelector('dialog[open]')) return;
@@ -856,7 +862,7 @@ function sanitize(data) {
       }
       if ('time' in y) y.time = /^\d{2}:\d{2}$/.test(y.time) ? y.time : null;
       for (const k of ['areaId', 'goalId', 'nextId']) if (y[k] && !SAFE_ID.test(y[k])) y[k] = null;
-      if (Array.isArray(y.steps)) y.steps = y.steps.filter((st) => st && SAFE_ID.test(st.id)).map((st) => ({ id: st.id, title: str(st.title, 200), done: !!st.done }));
+      if (Array.isArray(y.steps)) y.steps = y.steps.filter((st) => st && SAFE_ID.test(st.id)).map((st) => ({ id: st.id, title: str(st.title, 400), done: !!st.done }));
       return y;
     });
   }
