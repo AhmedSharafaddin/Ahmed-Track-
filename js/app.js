@@ -817,7 +817,7 @@ function downloadIcs(t) {
 }
 
 function setTheme(v) {
-  const th = ['green', 'exec', 'petrol', 'earth', 'aqua'].includes(v) ? v : 'dar';
+  const th = ['petrol', 'navy', 'aqua'].includes(v) ? v : 'petrol';
   env.theme = th;
   document.documentElement.dataset.theme = th;
   try { localStorage.setItem('cc:theme', th); } catch {}

@@ -22,7 +22,7 @@ export const ui = {
   tf: { q: '', area: '', pri: '' }, paneMore: false,
   focusId: null, timer: { total: 25 * 60, left: 25 * 60, running: false, endAt: 0 }, justDone: null,
 };
-export const env = { installPrompt: null, theme: document.documentElement.dataset.theme || 'dar' };
+export const env = { installPrompt: null, theme: document.documentElement.dataset.theme || 'petrol' };
 
 /* ───────── أيقونات ───────── */
 /** I('star') خطية، I('star','d') بلونين، I('star','f') ممتلئة */
@@ -442,8 +442,8 @@ function vSettings() {
   return `${vh('الإعدادات')}
   <div class="settings">
     <section class="panel"><h2>${I('sparkle', 'i')}المظهر</h2>
-      <p class="note">التنفيذي: ورقي دافئ وفحمي أخضر ولمسة ذهبية. الكلاسيكي: ألوان الإصدار الثالث. الثيمات الثلاثة الأولى بألوان ثابتة مريحة لا تتأثر بالوضع الداكن للجهاز؛ البقية تتبعه.</p>
-      <div class="chips" style="margin-top:10px">${[['petrol', 'بترولي فاخر'], ['earth', 'أرضي دافئ'], ['aqua', 'سماوي وفوشيا'], ['dar', 'طين وبحر'], ['exec', 'التنفيذي'], ['green', 'الكلاسيكي الأخضر']].map(([k, l]) => `<button class="chip-b${env.theme === k ? ' on' : ''}" data-act="theme" data-v="${k}" aria-pressed="${env.theme === k}">${l}</button>`).join('')}</div></section>
+      <p class="note">ثلاثة ثيمات بألوان ثابتة مريحة لا تتأثر بالوضع الداكن للجهاز.</p>
+      <div class="chips" style="margin-top:10px">${[['petrol', 'بترولي فاخر'], ['navy', 'كحلي فاخر'], ['aqua', 'سماوي وفوشيا']].map(([k, l]) => `<button class="chip-b${env.theme === k ? ' on' : ''}" data-act="theme" data-v="${k}" aria-pressed="${env.theme === k}">${l}</button>`).join('')}</div></section>
     <section class="panel"><h2>${I('user', 'i')}اسمك</h2>
       <form class="arow" data-form="name"><input class="in" name="name" value="${esc(localName())}" maxlength="30" placeholder="يظهر في التحية" /><button class="btn sm" type="submit">حفظ</button></form></section>
     ${notifyPanel()}
