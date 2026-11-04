@@ -168,16 +168,48 @@ function vToday() {
     : '';
   const score = `<div class="dayscore">${rings(focus)}<div><b>${n(doneN)} من ${n(MAX_FOCUS)}</b><span>${st ? `${I('fire', 'f', 'flame')}${daysWord(st)} متتالية` : 'ابدأ سلسلتك اليوم'}</span></div></div>`;
 
-  return `${vh('اليوم', `${greeting()}، ${fmtLongDate()}`, score)}
-  ${load.over ? `<p class="warn">${I('scales', 'd')}يومك أثقل من طاقتك بـ${fmtMin(load.minutes - load.cap)}. انقل مهمة إلى الغد أو أسندها، فالمبالغة في الالتزام أول طريق التشتت.</p>` : ''}
-  <ol class="three${allWon ? ' allwon' : ''}">${slots}</ol>
-  ${loadLine}
-  ${allWon ? `<p class="won-msg">${I('sparkle', 'd')}أنجزت الثلاث. ما يأتي بعدها مكسب إضافي، لا التزام.</p>` : ''}
-  ${quickAdd({ ctx: 'today' }, full ? 'أضف مهمة لليوم' : 'أضف أولوية لليوم')}
-  ${sug.length ? `<section class="blk"><p class="lbl">${I('bolt', 'i', 'gold')}اقتراحات حسب الأهمية والموعد</p>${rows(sug, { pick: true, full })}</section>` : ''}
-  ${also.length ? `<section class="blk"><p class="lbl">أيضًا اليوم <span class="cnt">${n(also.length)}</span></p>${rows(also, { pick: !full, full, follow: true })}</section>` : ''}
-  ${!focus.length && !sug.length && !also.length ? `<div class="empty">${I('sun', 'd', 'big')}<p>ابدأ بإضافة أول مهمة بالأعلى. سجّل كل ما في رأسك، ثم اختر ثلاثًا فقط.</p></div>` : ''}
-  ${doneBox(done, 'أنجزت اليوم')}`;
+  const remaining = Math.max(0, MAX_FOCUS - doneN);
+  const nextHint = !focus.length ? 'اختر أولوياتك الثلاث وابدأ بخطوة واحدة.'
+    : remaining === 0 ? 'ممتاز! أنجزت أولوياتك، خذ لحظة لتقدّر تقدمك.'
+      : `تبقّى ${n(remaining)} من أولويات اليوم. ابدأ بالأهم.`;
+
+  return `<div class="today-page">
+    <section class="today-hero" aria-label="ملخص يومك">
+      <div class="today-hero-content">
+        <div class="today-eyebrow"><span class="today-live-dot"></span>مساحة التركيز <span class="today-eyebrow-divider">/</span> ${fmtLongDate()}</div>
+        <p class="today-greeting">${greeting()}</p>
+        <h1>${nextHint}</h1>
+        <div class="today-hero-actions">
+          <button type="button" data-act="capture" class="today-hero-primary">${I('plus', 'd')} إضافة مهمة جديدة</button>
+          <a href="#/dashboard" class="today-hero-secondary">${I('chart', 'd')} شاهد تقدمك</a>
+        </div>
+      </div>
+      <div class="today-hero-progress" aria-label="أُنجزت ${n(doneN)} من ${n(MAX_FOCUS)} أولويات">
+        <div class="today-progress-ring">${rings(focus, 146)}<div class="today-progress-center"><b>${n(doneN)}<small> / ${n(MAX_FOCUS)}</small></b><span>مكتملة</span></div></div>
+        <div class="today-progress-caption">${st ? `${I('fire', 'f', 'flame')}${daysWord(st)} متتالية` : 'ابدأ سلسلتك اليوم'}</div>
+      </div>
+    </section>
+    ${load.over ? `<p class="warn">${I('scales', 'd')}يومك أثقل من طاقتك بـ${fmtMin(load.minutes - load.cap)}. نقل مهمة إلى الغد أو إسنادها قد يساعدك.</p>` : ''}
+    <section class="today-priorities" aria-labelledby="priorities-title">
+      <div class="today-section-head">
+        <div class="today-section-title"><span class="today-section-mark">${I('bolt', 'i')}</span><div><h2 id="priorities-title">أولويات اليوم</h2><p>ثلاث خطوات أساسية تستحق تركيزك</p></div></div>
+        <span class="today-section-count">${n(focus.length)} / ${n(MAX_FOCUS)}</span>
+      </div>
+      <ol class="three${allWon ? ' allwon' : ''}">${slots}</ol>
+      ${loadLine}
+      ${allWon ? `<p class="won-msg">${I('sparkle', 'd')}أنجزت الثلاث. ما يأتي بعدها مكسب إضافي، لا التزام.</p>` : ''}
+      ${quickAdd({ ctx: 'today' }, full ? 'أضف مهمة إلى اليوم' : 'أضف مهمة أو أولوية جديدة')}
+    </section>
+    ${sug.length ? `<section class="blk today-list-section"><div class="today-section-head"><div class="today-section-title"><span class="today-section-mark soft">${I('star', 'd')}</span><div><h2>مقترحة لك</h2><p>المهام الأقرب والأكثر أهمية</p></div></div></div>${rows(sug, { pick: true, full })}</section>` : ''}
+    ${also.length ? `<section class="blk today-list-section"><div class="today-section-head"><div class="today-section-title"><span class="today-section-mark soft">${I('cal', 'd')}</span><div><h2>أيضاً على جدولك</h2><p>مواعيد ومتابعات تستحق الانتباه</p></div></div><span class="today-section-count">${n(also.length)}</span></div>${rows(also, { pick: !full, full, follow: true })}</section>` : ''}
+    ${!focus.length && !sug.length && !also.length ? `<div class="empty today-empty">${I('sun', 'd', 'big')}<p>لا توجد مهام حتى الآن. أضف أول مهمة، ثم اختر ثلاث أولويات فقط لهذا اليوم.</p></div>` : ''}
+    ${doneBox(done, 'أنجزت اليوم')}
+    <nav class="today-shortcuts" aria-label="انتقال سريع">
+      <a href="#/list/planned">${I('cal', 'd')} <span>المهام القادمة</span>${I('back', 'i')}</a>
+      <a href="#/goals">${I('flag', 'd')} <span>أهدافي</span>${I('back', 'i')}</a>
+      <a href="#/matrix">${I('grid', 'd')} <span>مصفوفة الأولويات</span>${I('back', 'i')}</a>
+    </nav>
+  </div>`;
 }
 
 /* ═════════════ القوائم ═════════════ */
