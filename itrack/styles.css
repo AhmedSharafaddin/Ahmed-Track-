@@ -247,3 +247,4 @@ a.person:hover { background: var(--hover); }
 @keyframes pulse { to { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media print { .side, .tabbar, .toast, .no-print { display: none !important; } body { background: #fff; color: #000; } .card { box-shadow: none; } }
+[hidden] { display: none !important; }
