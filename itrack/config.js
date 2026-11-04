@@ -7,4 +7,4 @@ export const firebaseConfig = {
   projectId: 'track-b87ef',
   appId: '1:873398442659:web:9eef72f6dd453d23e5fd16',
 };
-export const apiUrl = null;
+export const apiUrl = 'https://itrack-api.sharafaddinahmed.workers.dev';
