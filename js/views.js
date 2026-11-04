@@ -442,8 +442,8 @@ function vSettings() {
   return `${vh('الإعدادات')}
   <div class="settings">
     <section class="panel"><h2>${I('sparkle', 'i')}المظهر</h2>
-      <p class="note">التنفيذي: ورقي دافئ وفحمي أخضر ولمسة ذهبية. الكلاسيكي: ألوان الإصدار الثالث. الوضع الداكن يتبع جهازك.</p>
-      <div class="chips" style="margin-top:10px">${[['dar', 'طين وبحر'], ['exec', 'التنفيذي'], ['green', 'الكلاسيكي الأخضر']].map(([k, l]) => `<button class="chip-b${env.theme === k ? ' on' : ''}" data-act="theme" data-v="${k}" aria-pressed="${env.theme === k}">${l}</button>`).join('')}</div></section>
+      <p class="note">التنفيذي: ورقي دافئ وفحمي أخضر ولمسة ذهبية. الكلاسيكي: ألوان الإصدار الثالث. الثيمات الثلاثة الأولى بألوان ثابتة مريحة لا تتأثر بالوضع الداكن للجهاز؛ البقية تتبعه.</p>
+      <div class="chips" style="margin-top:10px">${[['petrol', 'بترولي فاخر'], ['earth', 'أرضي دافئ'], ['aqua', 'سماوي وفوشيا'], ['dar', 'طين وبحر'], ['exec', 'التنفيذي'], ['green', 'الكلاسيكي الأخضر']].map(([k, l]) => `<button class="chip-b${env.theme === k ? ' on' : ''}" data-act="theme" data-v="${k}" aria-pressed="${env.theme === k}">${l}</button>`).join('')}</div></section>
     <section class="panel"><h2>${I('user', 'i')}اسمك</h2>
       <form class="arow" data-form="name"><input class="in" name="name" value="${esc(localName())}" maxlength="30" placeholder="يظهر في التحية" /><button class="btn sm" type="submit">حفظ</button></form></section>
     ${notifyPanel()}

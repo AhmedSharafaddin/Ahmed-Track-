@@ -15,7 +15,7 @@
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="manifest" href="manifest.webmanifest" />
   <!-- الثيم قبل أول رسم حتى لا يومض لون آخر -->
-  <script>try{var t=localStorage.getItem('cc:theme');if(t==='green'||t==='exec')document.documentElement.dataset.theme=t}catch(e){}</script>
+  <script>try{var t=localStorage.getItem('cc:theme');if(['green','exec','petrol','earth','aqua'].indexOf(t)>-1)document.documentElement.dataset.theme=t}catch(e){}</script>
 
   <!-- الأداء: الخط مستضاف هنا (ملف واحد لكل الأوزان) ويُحمَّل مبكرًا، ووحدات JS تُطلب بالتوازي لا بالتتابع -->
   <link rel="preload" href="fonts/readex-ar.woff2" as="font" type="font/woff2" crossorigin />
