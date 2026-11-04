@@ -10,6 +10,7 @@
 //   كل دقيقة (Cron)    يرسل ما حان وقته، ويحذف الأجهزة التي لم تعد صالحة
 //
 // الذكاء الاصطناعي (اختياري، يحتاج ربط Workers AI باسم AI — مجاني ضمن ١٠٬٠٠٠ neuron يوميًا):
+//   POST /voice        صوت WAV ← {text, items} (تفريغ + تحليل بطلب واحد؛ السياق في ?ctx=)
 //   POST /transcribe   صوت WAV (base64 نصًا خامًا) ← نص عربي (Whisper)
 //   POST /parse        نص الملاحظة الصوتية ← مهام/اجتماعات بحقولها، للتأكيد قبل الإضافة
 //   POST /minutes      نص اجتماع ← ملخص، حضور، قرارات، مطلوب من كل شخص، مواعيد
@@ -265,18 +266,55 @@ function cleanMinutes(j) {
   };
 }
 
+const PARSE_RULES = (today, weekday, areas, people) => `أنت تحوّل ملاحظة صوتية عربية (قد تكون بلهجة يمنية أو سعودية أو خليجية، وقد يحوي التفريغ أخطاء سمع) إلى عناصر منظمة لتطبيق مهام. أعد JSON فقط بالشكل {"items":[...]}.
+اليوم ${today}${weekday ? ` (${weekday})` : ''}. الأسبوع يبدأ السبت.
+- kind: "meeting" إن ذُكر اجتماع أو لقاء أو موعد مع أشخاص، وإلا "task".
+- title: عنوان قصير بفصحى بسيطة يبدأ بفعل للمهمة، أو «اجتماع مع ...» للاجتماع. احذف من العنوان عبارات الوقت والتاريخ («الساعة ١٠ مساءً»، «بكرة») لأنها تذهب لحقليها. لا تخترع تفاصيل لم تُذكر.
+- due: تاريخ YYYY-MM-DD إن ذُكر يوم أو تاريخ (بكرة/غدًا، بعد بكرة، الأحد، الأسبوع الجاي = السبت القادم...). إن ذُكر وقت بلا يوم فاجعل due = اليوم (${today}).
+- time: HH:MM بنظام ٢٤ ساعة. افهم الأوقات هكذا بدقة:
+  «الساعة عشرة مساءً/بالليل» = 22:00، «عشرة الصبح» = 10:00، «ثلاثة العصر» = 15:00، «ثمانية المغرب» = 20:00، «اثنا عشر الظهر» = 12:00، «اثنا عشر ليلًا» = 00:00،
+  «ونص» = :30، «وربع» = :15، «إلا ربع» = ناقص ١٥ دقيقة (مثلًا «تسعة إلا ربع صباحًا» = 08:45)، «وثلث» = :20، «إلا ثلث» = ناقص ٢٠ دقيقة.
+  إن لم يُذكر صباح أو مساء فاختر الأرجح لوقت العمل (الساعات ١–٦ بعد الظهر، ٧–١١ صباحًا).
+- duration بالدقائق للاجتماع إن ذُكرت. place للمكان إن ذُكر.
+- area: واحدة من هذه بالضبط إن كان واضحًا: ${areas.join('، ') || '(لا يوجد)'}. وإلا فارغ.
+- assignee: اسم الشخص المكلّف إن قال «خلي فلان» أو «كلّف فلان». أشخاص معروفون (صحّح تهجئة الاسم إلى ما يطابقهم): ${people.join('، ') || '(لا يوجد)'}.
+- important للمهم، urgent للعاجل أو «ضروري اليوم».
+- ملاحظة واحدة قد تحوي عدة عناصر: افصلها.`;
+
+async function transcribeAudio(env, audio, hint) {
+  const r = await env.AI.run(STT, { audio, language: 'ar', vad_filter: true, condition_on_previous_text: false, ...(hint ? { initial_prompt: hint } : {}) });
+  return tcut(r?.text, 20000);
+}
+async function parseText(env, text, today, weekday, areas, people) {
+  const j = await llmJson(env, PARSE_RULES(today, weekday, areas, people), text, { name: 'items', schema: PARSE_SCHEMA }, 700);
+  return cleanParsed(j, areas);
+}
+const okAudio = (audio) => audio && audio.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(audio.slice(0, 200));
+
 async function aiRoute(path, req, env, db, uid, url) {
   if (!env.AI) return json({ error: 'ai binding missing' }, 501);
   const kind = path.slice(1);
+  // /voice = تفريغ + تحليل في طلب واحد (يوفّر ذهابًا وإيابًا على الشبكة)، ويُحتسب على الحصتين
+  if (kind === 'voice') {
+    if ((await quota(db, uid, 'transcribe')) || (await quota(db, uid, 'parse'))) return json({ error: 'daily limit' }, 429);
+    const audio = await req.text();
+    if (!okAudio(audio)) return json({ error: 'bad audio' }, 400);
+    let c = {};
+    try { c = JSON.parse(url.searchParams.get('ctx') || '{}'); } catch {}
+    const today = DATE.test(c.today || '') ? c.today : new Date().toISOString().slice(0, 10);
+    const areas = (Array.isArray(c.areas) ? c.areas : []).map((a) => tcut(a, 40)).filter(Boolean).slice(0, 20);
+    const people = (Array.isArray(c.people) ? c.people : []).map((a) => tcut(a, 40)).filter(Boolean).slice(0, 40);
+    const text = await transcribeAudio(env, audio, tcut(url.searchParams.get('hint') || '', 400));
+    if (!text) return json({ text: '', items: [] });
+    return json({ text, items: await parseText(env, text, today, tcut(c.weekday, 20), areas, people) });
+  }
   if (await quota(db, uid, kind)) return json({ error: 'daily limit' }, 429);
 
   if (kind === 'transcribe') {
     // الجسم نص base64 خام (لا JSON) ⇒ لا تحليل على المعالج، يُمرّر كما هو
     const audio = await req.text();
-    if (!audio || audio.length > MAX_AUDIO_B64 || !/^[A-Za-z0-9+/=]+$/.test(audio.slice(0, 200))) return json({ error: 'bad audio' }, 400);
-    const prompt = tcut(url.searchParams.get('hint') || '', 300);
-    const r = await env.AI.run(STT, { audio, language: 'ar', vad_filter: true, ...(prompt ? { initial_prompt: prompt } : {}) });
-    return json({ text: tcut(r?.text, 20000) });
+    if (!okAudio(audio)) return json({ error: 'bad audio' }, 400);
+    return json({ text: await transcribeAudio(env, audio, tcut(url.searchParams.get('hint') || '', 400)) });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -288,19 +326,7 @@ async function aiRoute(path, req, env, db, uid, url) {
   if (kind === 'parse') {
     const text = tcut(body.text, 4000);
     if (!text) return json({ items: [] });
-    const sys = `أنت تحوّل ملاحظة صوتية عربية (قد تكون بلهجة يمنية أو سعودية أو خليجية) إلى عناصر منظمة لتطبيق مهام. أعد JSON فقط بالشكل {"items":[...]}.
-اليوم ${today}${weekday ? ` (${weekday})` : ''}. الأسبوع يبدأ السبت.
-- kind: "meeting" إن ذُكر اجتماع أو لقاء أو موعد مع أشخاص، وإلا "task".
-- title: عنوان قصير بفصحى بسيطة يبدأ بفعل للمهمة، أو «اجتماع مع ...» للاجتماع. لا تخترع تفاصيل لم تُذكر.
-- due: تاريخ YYYY-MM-DD فقط إن ذُكر يوم أو تاريخ (بكرة/غدًا، بعد بكرة، الأحد، الأسبوع الجاي = السبت القادم...). وإلا اتركه فارغًا.
-- time: HH:MM بنظام ٢٤ ساعة إن ذُكر وقت (الصبح/الصباح ⇒ قبل الظهر، العصر/المغرب/الليل ⇒ بعد الظهر).
-- duration بالدقائق للاجتماع إن ذُكرت. place للمكان إن ذُكر.
-- area: واحدة من هذه بالضبط إن كان واضحًا: ${areas.join('، ') || '(لا يوجد)'}. وإلا فارغ.
-- assignee: اسم الشخص المكلّف إن قال «خلي فلان» أو «كلّف فلان». أشخاص معروفون: ${people.join('، ') || '(لا يوجد)'}.
-- important للمهم، urgent للعاجل أو «ضروري اليوم».
-- ملاحظة واحدة قد تحوي عدة عناصر: افصلها.`;
-    const j = await llmJson(env, sys, text, { name: 'items', schema: PARSE_SCHEMA }, 900);
-    return json({ items: cleanParsed(j, areas) });
+    return json({ items: await parseText(env, text, today, weekday, areas, people) });
   }
 
   if (kind === 'minutes') {
@@ -336,7 +362,7 @@ async function handle(req, env) {
 
   const uid = await verifyUser(req, env);
   if (!uid) return json({ error: 'unauthorized' }, 401);
-  if (['/transcribe', '/parse', '/minutes'].includes(url.pathname)) return aiRoute(url.pathname, req, env, db, uid, url);
+  if (['/transcribe', '/parse', '/minutes', '/voice'].includes(url.pathname)) return aiRoute(url.pathname, req, env, db, uid, url);
   const body = await req.json().catch(() => ({}));
 
   if (url.pathname === '/subscribe') {

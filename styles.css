@@ -1054,7 +1054,7 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
   --hover: #edf4f2;
   --ink: #193437;
   --ink-2: #40595b;
-  --muted: #667a7b;
+  --muted: #586c6d;
   --faint: #8a9c9d;
   --line: #e5ece9;
   --line-2: #d4dfda;

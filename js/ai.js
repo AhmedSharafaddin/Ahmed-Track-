@@ -61,7 +61,7 @@ function pickMime() {
 class Recorder {
   constructor(segSec, onSeg) { this.segSec = segSec; this.onSeg = onSeg; this.parts = []; this.t0 = 0; }
   async start(streamP) {
-    this.stream = await (streamP || navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }));
+    this.stream = await (streamP || navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
     this.mime = pickMime();
     this.t0 = Date.now();
     this._chunk();
@@ -112,8 +112,19 @@ function watchSilence(rec, onSilence) {
   } catch {}
 }
 
+/** يقصّ الصمت من أول التسجيل وآخره (مع هامش ٠٫٣ث) كي لا نرفع ثواني فارغة. */
+function trimSilence(pcm, rate) {
+  const win = Math.round(rate * 0.02);
+  const loud = (i) => { let m = 0; for (let k = i; k < Math.min(i + win, pcm.length); k++) m = Math.max(m, Math.abs(pcm[k])); return m > 0.02; };
+  let a = 0; while (a < pcm.length && !loud(a)) a += win;
+  let z = pcm.length - win; while (z > a && !loud(z)) z -= win;
+  if (a >= z) return pcm;
+  const pad = Math.round(rate * 0.3);
+  return pcm.slice(Math.max(0, a - pad), Math.min(pcm.length, z + win + pad));
+}
+
 /** أي صوت يفكّه المتصفح ← WAV أحادي 16kHz (يقبله Whisper دائمًا، وحجمه صغير). */
-async function toWavBase64(blob) {
+async function toWavBase64(blob, trim = false) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ac = new AC();
   let audio;
@@ -123,7 +134,8 @@ async function toWavBase64(blob) {
   try { off = new OfflineAudioContext(1, Math.ceil(audio.duration * rate), rate); } catch { rate = 22050; off = new OfflineAudioContext(1, Math.ceil(audio.duration * rate), rate); }
   const src = off.createBufferSource();
   src.buffer = audio; src.connect(off.destination); src.start();
-  const pcm = (await off.startRendering()).getChannelData(0);
+  let pcm = (await off.startRendering()).getChannelData(0);
+  if (trim) pcm = trimSilence(pcm, rate); // أقل بيانات للرفع = استجابة أسرع على الشبكات البطيئة
   const buf = new ArrayBuffer(44 + pcm.length * 2);
   const v = new DataView(buf);
   const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
@@ -135,11 +147,73 @@ async function toWavBase64(blob) {
   return String(url).slice(String(url).indexOf(',') + 1);
 }
 
-async function transcribe(blob) {
-  const b64 = await toWavBase64(blob);
-  const hint = [...areas().map((a) => a.name), ...people().map((p) => p.name).slice(0, 15)].join('، ');
-  const { text } = await call('/transcribe', b64, true, hint ? `?hint=${encodeURIComponent(hint.slice(0, 280))}` : '');
+/** توجيه Whisper: جملة بأسلوب كلامك (أرقام الوقت بالأرقام) + أسماء مجالاتك وأشخاصك، فيلتقطها أدق. */
+function whisperHint() {
+  const style = 'ذكّرني اليوم الساعة 10 مساءً أتصل بالمورد. بكرة 9 صباحًا اجتماع مع المدير في المكتب.';
+  const names = [...areas().map((a) => a.name), ...people().map((p) => p.name).slice(0, 12)].join('، ');
+  return `${style} ${names}`.slice(0, 380);
+}
+async function transcribe(blob, trim = false) {
+  const b64 = await toWavBase64(blob, trim);
+  const { text } = await call('/transcribe', b64, true, `?hint=${encodeURIComponent(whisperHint())}`);
   return (text || '').trim();
+}
+let noVoiceRoute = false; // الخادم القديم لا يعرف /voice ⇒ نرجع للطريقة بطلبين
+/** تفريغ + تحليل بطلب واحد إن أمكن. */
+async function voiceNote(blob) {
+  if (!noVoiceRoute) {
+    const b64 = await toWavBase64(blob, true);
+    try {
+      const r = await call('/voice', b64, true, `?hint=${encodeURIComponent(whisperHint())}&ctx=${encodeURIComponent(JSON.stringify(context()))}`);
+      return { text: (r.text || '').trim(), items: r.items || [] };
+    } catch (e) { if (e.code !== 404) throw e; noVoiceRoute = true; }
+  }
+  const text = await transcribe(blob, true);
+  if (!text) return { text: '', items: [] };
+  const { items } = await call('/parse', { text, ...context() });
+  return { text, items: items || [] };
+}
+
+/* ───────── فهم الوقت المنطوق (شبكة أمان فوق النموذج) ───────── */
+const AR_NUM = { واحد: 1, واحدة: 1, وحدة: 1, اثنين: 2, اثنتين: 2, ثنتين: 2, اثنان: 2, ثلاث: 3, ثلاثة: 3, تلات: 3, أربع: 4, اربع: 4, أربعة: 4, اربعة: 4, خمس: 5, خمسة: 5, ست: 6, ستة: 6, سبع: 7, سبعة: 7, ثمان: 8, ثماني: 8, ثمانية: 8, تمان: 8, تسع: 9, تسعة: 9, عشر: 10, عشرة: 10, 'إحدى عشر': 11, 'احدى عشر': 11, احدعش: 11, إحدعش: 11, 'اثنا عشر': 12, 'اثني عشر': 12, اثنعش: 12, اطنعش: 12 };
+export function extractTime(text) {
+  const t = String(text || '').replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 1632).replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه');
+  const words = Object.keys(AR_NUM).map((w) => w.replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه')).sort((a, b) => b.length - a.length).join('|');
+  const m = t.match(new RegExp(`(?:الساعه|ساعه)\\s*(\\d{1,2}(?::\\d{2})?|${words})(?:\\s*(و|الا)\\s*(نص|نصف|ربع|ثلث|\\d{1,2}))?\\s*(?:في\\s*)?(?:ال)?(صباحا|صباح|صبح|فجر|ظهرا|ظهر|عصر|مساء|مغرب|ليل|بالليل)?`));
+  if (!m) return null;
+  const key = (w) => Object.keys(AR_NUM).find((k) => k.replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه') === w);
+  let h; let min = 0;
+  if (/^\d/.test(m[1])) { const [hh, mm] = m[1].split(':'); h = +hh; min = +(mm || 0); } else h = AR_NUM[key(m[1])];
+  if (!(h >= 0 && h <= 24)) return null;
+  if (m[2]) {
+    const q = m[3] === 'ربع' ? 15 : m[3] === 'ثلث' ? 20 : /^\d/.test(m[3]) ? +m[3] : 30;
+    min = m[2] === 'و' ? q : -q;
+  }
+  const p = m[4] || '';
+  if (/^(صبح|صباح|فجر)/.test(p)) { if (h === 12) h = 0; }
+  else if (/^ظهر/.test(p)) { if (h < 6) h += 12; }
+  else if (/^(عصر|مساء|مغرب|ليل|بالليل)/.test(p)) { if (h === 12 && /ليل/.test(p)) h = 0; else if (h < 12) h += 12; }
+  else if (h >= 1 && h <= 6) h += 12; // بلا ذكر صباح/مساء: ١–٦ غالبًا بعد الظهر
+  let total = h * 60 + min;
+  if (total < 0) total += 1440;
+  total %= 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+/** يصحّح الوقت والتاريخ: وقت بلا يوم ⇒ اليوم (أو غدًا إن مضى الوقت). */
+export function fixItems(text, items) {
+  const tx = extractTime(text);
+  const noTime = items.filter((i) => !i.time).length;
+  const now = new Date();
+  const nowHM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return items.map((it) => {
+    const o = { ...it };
+    if (tx && (items.length === 1 || (noTime === 1 && !it.time))) {
+      const ai = o.time ? +o.time.slice(0, 2) : null;
+      if (!o.time || (+tx.slice(0, 2) - ai + 24) % 24 === 12) o.time = tx;
+    }
+    if (o.time && !o.due) o.due = o.time > nowHM ? todayKey() : keyAdd(todayKey(), 1);
+    return o;
+  });
 }
 
 /* ───────── واجهة مشتركة ───────── */
@@ -192,14 +266,12 @@ export async function openVoice({ dlg, I, toast, ctx = {}, streamP = null }) {
 
   async function process() {
     off();
-    dlg.innerHTML = busyView('أحوّل صوتك إلى نص…');
+    dlg.innerHTML = busyView('أسمعك وأرتّب ما قلته…');
     try {
       if (!blobs.length) throw new Error('لم يُلتقط صوت. حاول مرة أخرى وتكلّم بعد ظهور المؤقت.');
-      const text = await transcribe(blobs[0]);
+      const { text, items } = await voiceNote(blobs[0]);
       if (!text) throw new Error('لم أسمع كلامًا واضحًا. حاول مرة أخرى في مكان أهدأ.');
-      dlg.innerHTML = busyView('أفهم ما قلته وأرتبه…');
-      const { items } = await call('/parse', { text, ...context() });
-      confirmView(text, items?.length ? items : [{ kind: 'task', title: text.slice(0, 200) }]);
+      confirmView(text, fixItems(text, items?.length ? items : [{ kind: 'task', title: text.slice(0, 200) }]));
     } catch (e) {
       dlg.innerHTML = errView(errMsg(e), I);
       bindOnce(dlg, () => dlg.close());
@@ -240,7 +312,7 @@ export async function openVoice({ dlg, I, toast, ctx = {}, streamP = null }) {
         f.querySelectorAll('[data-v="kind"]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
       }
       if (v === 'add') {
-        let added = 0;
+        let added = 0; let remindAt = '';
         dlg.querySelectorAll('.vitem').forEach((f) => {
           const e = f.elements;
           if (!e.on.checked || !e.title.value.trim()) return;
@@ -258,9 +330,10 @@ export async function openVoice({ dlg, I, toast, ctx = {}, streamP = null }) {
             ...(meet ? { kind: 'meeting', place: e.place.value.trim().slice(0, 120) || null, duration: Math.min(600, Math.max(5, Number(e.duration.value) || 60)) } : {}),
           });
           added++;
+          if (time && !meet && !remindAt) remindAt = `الساعة ${time}`;
         });
         dlg.close();
-        toast(added ? `أُضيف ${added === 1 ? 'عنصر واحد' : added === 2 ? 'عنصران' : `${n(added)} عناصر`}.` : 'لم يُضف شيء.');
+        toast(added ? `أُضيف ${added === 1 ? 'عنصر واحد' : added === 2 ? 'عنصران' : `${n(added)} عناصر`}${remindAt ? `، وسأذكّرك ${remindAt}` : ''}.` : 'لم يُضف شيء.');
       }
     });
   }
