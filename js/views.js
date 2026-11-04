@@ -16,7 +16,6 @@ import { vPyramid } from './pyramid.js';
 import { notify } from './notify.js';
 import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
-import { vTeam, spaceSwitch } from './team.js';
 
 export const ui = {
   route: 'today', param: null, sel: null, q: '', weekOffset: 0, drafts: {},
@@ -367,7 +366,6 @@ function vLists() {
   const nv = navItems();
   return `${vh('القوائم')}
     <label class="search big">${I('search')}<input type="search" id="q2" data-act="search" placeholder="ابحث في كل المهام" value="${esc(ui.q)}" /></label>
-    ${spaceSwitch(false)}
     <nav class="hub">${nv.ctrl.replace(/<a href="#\/today"[^]*?<\/a>/, '')}<hr />${nv.smart}<hr />${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a><hr /><a href="#/settings" class="ni">${I('gear', 'd')}<span>الإعدادات</span></a></nav>`;
 }
 
@@ -527,7 +525,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: () => vPyramid({ I, vh, ui }), review: vReview,
-  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, team: () => vTeam({ I, vh, ui }), lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */

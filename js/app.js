@@ -11,7 +11,6 @@ import {
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
-import { team, teamSync, teamNav, spaceSwitch, teamClick, teamSubmit, teamChange, restricted } from './team.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view');
@@ -59,8 +58,7 @@ function paint() {
   document.body.classList.add('ready');
 
   const nv = navItems();
-  const inTeam = ui.route === 'team';
-  const navHtml = inTeam ? `${spaceSwitch(true)}${nv.grp('الفريق')}${teamNav(I)}` : `${spaceSwitch(false)}${nv.grp('مركز التحكم')}${nv.ctrl}${nv.grp('القوائم الذكية')}${nv.smart}${nv.grp('أدوات')}${nv.views}${nv.grp('المجالات')}${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a>`;
+  const navHtml = `${nv.grp('مركز التحكم')}${nv.ctrl}${nv.grp('القوائم الذكية')}${nv.smart}${nv.grp('أدوات')}${nv.views}${nv.grp('المجالات')}${nv.lists}<a href="#/settings#areas" class="ni addlist">${I('plus')}<span>مجال جديد</span></a>`;
   if (navHtml !== last.nav) { navEl.innerHTML = navHtml; last.nav = navHtml; }
   const here = location.hash.replace(/#areas$/, '').replace(/\?.*$/, '') || '#/today';
   if (here !== last.route) {
@@ -149,15 +147,13 @@ function onRoute() {
   }
   const m = location.hash.match(/^#\/(\w+)(?:\/([^#?]+))?/) || [];
   const r = ROUTES[m[1]] ? m[1] : 'today';
-  // الموظف والمدير (غير المسؤول) يرون قسم الفريق فقط
-  if (restricted() && r !== 'team' && r !== 'settings') { location.replace('#/team'); return; }
   const changed = r !== ui.route || (m[2] || null) !== ui.param;
   ui.route = r;
   ui.param = m[2] ? decodeURIComponent(m[2]) : null;
   if (changed && r !== 'review') ui.weekOffset = 0;
   if (changed && !tm) ui.sel = null;
   if (r !== 'search' && changed) { ui.q = ''; const q = $('#q'); if (q) q.value = ''; }
-  document.title = r === 'widget' ? 'أولويات اليوم' : r === 'team' ? 'الفريق — مركز القيادة' : 'مركز القيادة';
+  document.title = r === 'widget' ? 'أولويات اليوم' : 'مركز القيادة';
   render();
   if (changed) window.scrollTo(0, 0);
   if (location.hash.endsWith('#areas')) setTimeout(() => $('#areas')?.scrollIntoView({ block: 'start' }), 60);
@@ -522,7 +518,6 @@ document.addEventListener('click', (e) => {
     case 'widget-open':
       if (window.opener && !window.opener.closed) { e.preventDefault(); window.opener.focus(); }
       break;
-    default: teamClick(act, el, teamCtx);
   }
 });
 
@@ -541,7 +536,6 @@ function maybeAskNotify() {
 /* حقول لوحة التفاصيل تُحفظ تلقائيًا عند التغيير */
 document.addEventListener('change', (e) => {
   const el = e.target;
-  if (teamChange(el)) return;
   if (el.dataset.act === 'import' && el.files[0]) { importData(el.files[0]).finally(() => { el.value = ''; }); return; }
   if (el.dataset.tf) {
     if (el.dataset.tf === 'status') { location.hash = el.value === 'open' ? '#/all' : `#/all/${el.value}`; return; }
@@ -722,7 +716,6 @@ document.addEventListener('submit', (e) => {
       }
       break;
     }
-    default: teamSubmit(form.dataset.form, form, fd, e.submitter, teamCtx);
   }
 });
 
@@ -733,7 +726,7 @@ document.addEventListener('keydown', (e) => {
   // الخطوات حقول نصية متعددة الأسطر تنمو مع الكتابة؛ Enter يحفظ ولا يضيف سطرًا (Shift+Enter سطر جديد)
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && tag === 'TEXTAREA' && e.target.classList.contains('sin')) {
     e.preventDefault();
-    if (e.target.id === 'p-newstep' || e.target.id === 'tr-text') e.target.form?.requestSubmit(); else e.target.blur();
+    if (e.target.id === 'p-newstep') e.target.form?.requestSubmit(); else e.target.blur();
     return;
   }
   if (e.key === 'Escape') {
@@ -919,14 +912,7 @@ function checkDay() {
 
 let rolledFor = null;
 let planT = 0;
-/* قسم الفريق: يتبع حساب الدخول، ويعيد الرسم عند وصول بياناته */
-const teamCtx = { toast, render: () => { last.view = ''; last.nav = ''; render(); } };
-team.onChange = () => {
-  if (restricted() && ui.route !== 'team' && ui.route !== 'settings') { location.replace('#/team'); return; }
-  if (ui.route === 'team' || ui.route === 'today' || ui.route === 'settings') teamCtx.render(); else { last.nav = ''; render(); }
-};
 store.subscribe((state, status, dataChanged) => {
-  teamSync();
   const source = store.mode === 'cloud' ? store.user?.uid : 'local';
   if (rolledFor !== source && status.ready && (store.mode !== 'cloud' || status.serverConfirmed)) {
     rolledFor = source;

@@ -147,9 +147,6 @@ class CloudAdapter {
       console.warn('persistent cache unavailable, using memory cache', e);
       this.db = fs.getFirestore(app);
     }
-    // للاختبار فقط: محاكي Firebase المحلي (لا يُفعَّل إلا إن عرّفه سكربت الاختبار)
-    const emu = globalThis.__ccEmulator;
-    if (emu) { fs.connectFirestoreEmulator(this.db, emu.host, emu.fs); authMod.connectAuthEmulator(this.auth, `http://${emu.host}:${emu.auth}`, { disableWarnings: true }); }
   }
 
   onAuth(cb) { return this.authMod.onAuthStateChanged(this.auth, cb); }
