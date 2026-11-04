@@ -102,7 +102,7 @@ function paint() {
 
 /** وضع التركيز نافذة كاملة: ما خلفه لا يُركَّز عليه بلوحة المفاتيح ولا يقرؤه قارئ الشاشة. */
 function setInert(on) {
-  for (const sel of ['.shell', '.tabbar', '.fab']) { const el = $(sel); if (el) el.inert = on; }
+  for (const sel of ['.shell', '.tabbar', '.fab', '.mic-fab']) { const el = $(sel); if (el) el.inert = on; }
 }
 
 function autosize(el) {
@@ -378,7 +378,10 @@ document.addEventListener('click', (e) => {
     case 'voice': {
       const ctx = el.closest('form')?.dataset || {};
       if (dlg.open) dlg.close();
-      import('./ai.js').then((m) => { const st = m.aiState(); if (st !== 'ok') { toast(m.AI_MSG[st]); return; } m.openVoice({ dlg, I, toast, ctx: { area: ctx.area || (ui.route === 'area' ? ui.param : null), ctx: ctx.ctx } }); });
+      // اطلب الميكروفون فورًا داخل لمسة المستخدم، قبل تحميل أي شيء، لتضيع أقل كلمات ممكنة
+      let streamP = null;
+      try { streamP = navigator.mediaDevices?.getUserMedia?.({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); streamP?.catch(() => {}); } catch {}
+      (aiMod || (aiMod = import('./ai.js'))).then((m) => { const st = m.aiState(); if (st !== 'ok') { toast(m.AI_MSG[st]); streamP?.then((s) => s.getTracks().forEach((t) => t.stop())).catch(() => {}); return; } if (navigator.vibrate) navigator.vibrate(12); m.openVoice({ dlg, I, toast, streamP, ctx: { area: ctx.area || (ui.route === 'area' ? ui.param : null), ctx: ctx.ctx } }); });
       break;
     }
     case 'minutes': import('./ai.js').then((m) => m.openMinutes({ dlg, I, toast, id: el.dataset.id, go: (h) => { location.hash = h; } })); break;
@@ -728,6 +731,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || document.querySelector('dialog[open]')) return;
   if (e.code === 'KeyN') { e.preventDefault(); const qa = $('#qa', view); if (qa && isDesk()) qa.focus(); else openCapture(ui.route === 'today' ? { ctx: 'today' } : {}); }
+  if (e.code === 'KeyV') { e.preventDefault(); $('.mic-side')?.click(); }
   if (e.code === 'Slash') { e.preventDefault(); if (isDesk()) $('#q').focus(); else location.hash = '#/lists'; }
 });
 
@@ -921,6 +925,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { ch
 setInterval(checkDay, 60_000);
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); env.installPrompt = e; if (ui.route === 'settings') { last.view = ''; render(); } });
 matchMedia('(min-width: 900px)').addEventListener('change', render);
+
+let aiMod = null;
+// حمّل وحدة الصوت أثناء خمول المتصفح كي لا ينتظرها أول ضغط على الميكروفون
+(window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => { aiMod = aiMod || import('./ai.js').catch(() => null); }, { timeout: 4000 });
 
 onRoute();
 store.boot().catch((e) => { console.error(e); view.innerHTML = '<p class="loading">تعذّر تشغيل التطبيق.</p>'; });

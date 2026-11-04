@@ -1,0 +1,22 @@
+const {chromium}=require('playwright');
+let pass=0,fail=0;const ok=(n,c,x)=>{if(c){pass++;console.log('PASS',n)}else{fail++;console.log('FAIL',n,x===undefined?'':JSON.stringify(x))}};
+(async()=>{
+ const b=await chromium.launch({...(process.env.CHROME?{executablePath:process.env.CHROME}:{})});
+ const ctx=await b.newContext({viewport:{width:1440,height:900}});const p=await ctx.newPage();
+ const errs=[];p.on('pageerror',e=>errs.push(e.message));
+ await p.clock.install();
+ await p.goto(''+(process.env.BASE||'http://localhost:8790')+'/');await p.evaluate(()=>localStorage.clear());await p.reload();await p.clock.runFor(800);
+ const D=()=>p.evaluate(()=>JSON.parse(localStorage.getItem('cc:data:v1')));
+ await p.fill('#qa','مهمة بومودورو');await p.press('#qa','Enter');await p.clock.runFor(400);
+ await p.click('li.t .tm');await p.clock.runFor(300);
+ await p.click('.pomo-go');await p.clock.runFor(300);
+ await p.clock.runFor(25*60*1000+2000);
+ let t=(await D()).tasks.find(t=>t.title==='مهمة بومودورو');
+ ok('pomos=1 and spent≈25',t.pomos===1&&t.spent>=24&&t.spent<=26,[t.pomos,t.spent]);
+ ok('break mode shown',(await p.textContent('.fx-lbl')).includes('استراحة')&&await p.isVisible('[data-act=fx-skip]'));
+ await p.screenshot({path:'break.png'});
+ await p.click('.fx-go');await p.clock.runFor(5*60*1000+2000);
+ ok('back to work mode after break',(await p.textContent('.fx-lbl')).includes('الجلسة ٢')||(await p.textContent('.fx-lbl')).includes('2'),await p.textContent('.fx-lbl'));
+ t=(await D()).tasks.find(t=>t.title==='مهمة بومودورو');ok('break time not counted',t.spent<=26,t.spent);
+ ok('no errors',errs.length===0,errs);console.log(pass,fail);await b.close();
+})();

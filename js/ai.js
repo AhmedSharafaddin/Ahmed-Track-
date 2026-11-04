@@ -60,8 +60,8 @@ function pickMime() {
 /** مسجّل يقسّم التسجيل إلى مقاطع مستقلة (كل مقطع ملف صوتي كامل). */
 class Recorder {
   constructor(segSec, onSeg) { this.segSec = segSec; this.onSeg = onSeg; this.parts = []; this.t0 = 0; }
-  async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  async start(streamP) {
+    this.stream = await (streamP || navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }));
     this.mime = pickMime();
     this.t0 = Date.now();
     this._chunk();
@@ -89,6 +89,27 @@ class Recorder {
     });
   }
   cancel() { this.onSeg = () => {}; clearTimeout(this.timer); try { this.mr?.stop(); } catch {} this.stream?.getTracks().forEach((t) => t.stop()); }
+}
+
+/** يوقف التسجيل تلقائيًا بعد ١٫٦ ثانية صمت بعد أن يتكلّم المستخدم (يوفّر الضغط على «إيقاف»). */
+function watchSilence(rec, onSilence) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    const an = ac.createAnalyser();
+    an.fftSize = 512;
+    ac.createMediaStreamSource(rec.stream).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    let spoke = 0; let quiet = 0;
+    const iv = setInterval(() => {
+      if (!rec.stream?.active) { clearInterval(iv); ac.close().catch(() => {}); return; }
+      an.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      if (peak > 14) { spoke += 1; quiet = 0; } else quiet += 1;
+      if (spoke >= 3 && quiet >= 16) { clearInterval(iv); ac.close().catch(() => {}); onSilence(); }
+    }, 100);
+  } catch {}
 }
 
 /** أي صوت يفكّه المتصفح ← WAV أحادي 16kHz (يقبله Whisper دائمًا، وحجمه صغير). */
@@ -143,7 +164,7 @@ function bindOnce(dlg, handler) {
 }
 
 /* ───────── الإدخال الصوتي ───────── */
-export async function openVoice({ dlg, I, toast, ctx = {} }) {
+export async function openVoice({ dlg, I, toast, ctx = {}, streamP = null }) {
   dlg.classList.remove('commit-dlg');
   let rec = null;
   let ticker = null;
@@ -160,7 +181,8 @@ export async function openVoice({ dlg, I, toast, ctx = {} }) {
   if (!dlg.open) dlg.showModal();
   try {
     rec = new Recorder(0, (b) => blobs.push(b));
-    await rec.start();
+    await rec.start(streamP);
+    watchSilence(rec, () => { if (!stopped) dlg.querySelector('[data-v="stop"]')?.click(); });
   } catch (e) { off(); dlg.innerHTML = errView(errMsg(e), I); bindOnce(dlg, () => dlg.close()); return; }
   ticker = setInterval(() => {
     const el = dlg.querySelector('#rec-t');
@@ -210,7 +232,7 @@ export async function openVoice({ dlg, I, toast, ctx = {} }) {
     dlg.querySelectorAll('.vitem').forEach((f) => f.classList.toggle('is-meet', f.elements.kind.value === 'meeting'));
     const offC = bindOnce(dlg, (v, b) => {
       if (v === 'cancel') dlg.close();
-      if (v === 'again') { offC(); openVoice({ dlg, I, toast, ctx }); return; }
+      if (v === 'again') { offC(); openVoice({ dlg, I, toast, ctx, streamP: null }); return; }
       if (v === 'kind') {
         const f = b.closest('.vitem');
         f.elements.kind.value = b.dataset.k;

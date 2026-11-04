@@ -627,7 +627,7 @@ button.prow:hover:not(:disabled) { background: var(--surface-2); }
 @media (min-width: 900px) { .toast { bottom: 28px; } }
 
 /* ───────── وضع الـWidget ───────── */
-body.widget-mode .side, body.widget-mode .tabbar, body.widget-mode .fab, body.widget-mode .pane { display: none !important; }
+body.widget-mode .side, body.widget-mode .tabbar, body.widget-mode .fab, body.widget-mode .mic-fab, body.widget-mode .pane { display: none !important; }
 body.widget-mode .shell { display: block; }
 body.widget-mode .view { padding: 14px 12px; max-width: none; }
 .widget > header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -1020,3 +1020,22 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
   :root[data-theme="dar"] .pane .pmore:hover { background: rgba(255, 255, 255, .08); }
   :root[data-theme="dar"] .pane .quadtag { color: #f1ebdc; background: rgba(255, 255, 255, .12); }
 }
+
+/* ═════════ زر الصوت: الإدخال الأسرع ═════════ */
+/* الجوال: في منتصف الأسفل (منطقة إبهام محايدة لليد اليمنى واليسرى)، كبير، فوق الشريط السفلي */
+.mic-fab {
+  position: fixed; z-index: 32; inset-inline: 0; margin-inline: auto; bottom: calc(66px + var(--safe-b));
+  width: 76px; height: 76px; border-radius: 50%; border: 0;
+  background: var(--accent); color: var(--on-accent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 38%, transparent), 0 0 0 6px color-mix(in srgb, var(--bg) 90%, transparent);
+  display: grid; place-items: center; transition: transform .12s var(--ease);
+}
+.mic-fab:active { transform: scale(.92); }
+.mic-fab .ic { width: 34px; height: 34px; }
+.fab { width: 50px; height: 50px; border-radius: 16px; bottom: calc(84px + var(--safe-b)); }
+.fab .ic { width: 22px; height: 22px; }
+.mic-side { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: center; min-height: 52px; font-size: 1rem; font-weight: 600; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2); color: var(--ink); }
+.mic-side .ic { width: 22px; height: 22px; color: var(--accent); }
+.mic-side kbd { margin-inline-start: auto; font-size: .72rem; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.2); color: var(--muted); }
+@media (min-width: 900px) { .mic-fab { display: none; } }
+@media (max-width: 899px) { .mic-side { display: none; } }
