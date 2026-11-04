@@ -10,7 +10,7 @@
 //
 // ⚠️ عند أي تعديل على ملفات التطبيق: ارفع رقم VERSION — وإلا لن يصل التعديل للأجهزة المثبّت عليها.
 
-const VERSION = 'cc-v19';
+const VERSION = 'cc-v20';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
@@ -46,6 +46,7 @@ self.addEventListener('fetch', (e) => {
 
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
+    if (url.pathname.includes('/itrack/')) return; // ITrack تطبيق مستقل له Service Worker خاص به
     e.respondWith(
       caches.open(VERSION).then(async (cache) => {
         const key = req.mode === 'navigate' ? './index.html' : req;
