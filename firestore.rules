@@ -1,6 +1,8 @@
 rules_version = '2';
 
-// كل مستخدم يقرأ ويكتب بياناته فقط: users/{uid}/{areas|goals|tasks|reviews}/{id}
+// ١) البيانات الشخصية: كل مستخدم يقرأ ويكتب بياناته فقط: users/{uid}/{areas|goals|tasks|reviews}/{id}
+// ٢) قسم الفريق: org/main (المسؤول)، members/{email} (الموظفون والتوصيف)، reports/{email}__{date} (التقارير اليومية)
+//    الموظف يرى ملفه وتقاريره فقط، المدير المباشر يرى من يتبعونه، المسؤول يرى الجميع.
 // أي مسار آخر مرفوض افتراضيًا.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -8,6 +10,67 @@ service cloud.firestore {
       allow read, write: if request.auth != null
         && request.auth.uid == userId
         && collection in ['areas', 'goals', 'tasks', 'reviews'];
+    }
+
+    function signed() { return request.auth != null && request.auth.token.email != null; }
+    function me() { return request.auth.token.email.lower(); }
+    function orgPath() { return /databases/$(database)/documents/org/main; }
+    function isOwner() { return signed() && exists(orgPath()) && get(orgPath()).data.ownerUid == request.auth.uid; }
+    function memPath(e) { return /databases/$(database)/documents/members/$(e); }
+    function hasMember(e) { return exists(memPath(e)); }
+    function member(e) { return get(memPath(e)).data; }
+    function manages(e) { return hasMember(e) && member(e).managerEmail == me(); }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    match /org/main {
+      allow read: if signed();
+      // يُنشأ مرة واحدة: من يفعّل القسم أولًا يصبح المسؤول
+      allow create: if signed() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid', 'ownerEmail', 'name', 'createdAt']);
+      allow update: if isOwner() && request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if false;
+    }
+
+    match /members/{e} {
+      allow get: if signed() && (e == me() || isOwner() || manages(e));
+      allow list: if signed() && (isOwner() || resource.data.managerEmail == me());
+      allow create, delete: if isOwner();
+      // المدير المباشر يوثّق توصيف من يتبعونه فقط
+      allow update: if isOwner()
+        || (signed() && resource.data.managerEmail == me() && changed().hasOnly(['jd', 'title', 'updatedAt']));
+    }
+
+    match /reports/{rid} {
+      function author() { return rid.split('__')[0]; }
+      function okShape() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['email', 'date', 'managerEmail', 'items', 'note', 'status', 'submittedAt', 'updatedAt', 'review'])
+          && d.items is list && d.items.size() <= 60 && d.note is string && d.note.size() <= 1000;
+      }
+      allow get: if signed() && (author() == me() || isOwner() || manages(author()));
+      allow list: if signed() && (isOwner() || resource.data.email == me() || resource.data.managerEmail == me());
+      // الموظف ينشئ تقريره ليومه، باسمه ومديره الحالي
+      allow create: if signed() && hasMember(me()) && okShape()
+        && request.resource.data.email == me()
+        && rid == me() + '__' + request.resource.data.date
+        && request.resource.data.status in ['draft', 'submitted']
+        && request.resource.data.managerEmail == member(me()).managerEmail
+        && !('review' in request.resource.data);
+      allow update: if signed() && (
+        // الموظف: يعدّل المسودة أو ما أعاده مديره، ولا يلمس ملاحظة المدير
+        (resource.data.email == me() && resource.data.status in ['draft', 'returned'] && okShape()
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.date == resource.data.date
+          && request.resource.data.managerEmail == member(me()).managerEmail
+          && (request.resource.data.status in ['draft', 'submitted'] || (request.resource.data.status == 'returned' && resource.data.status == 'returned'))
+          && !('review' in changed()))
+        // المدير المباشر أو المسؤول: ملاحظة، أو إعادة للتعديل
+        || ((isOwner() || resource.data.managerEmail == me()) && resource.data.email != me()
+          && resource.data.status in ['submitted', 'returned']
+          && changed().hasOnly(['review', 'status', 'updatedAt'])
+          && request.resource.data.status in ['submitted', 'returned'])
+      );
+      allow delete: if false;
     }
   }
 }
