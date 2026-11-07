@@ -176,7 +176,7 @@ function vAuth() {
   const inviteOnly = S.info.signup === 'invite';
   return `<div class="auth"><div class="card">
     <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small>العمل اليومي والمهام في مكان واحد</small></div></div>
-    <div class="seg" role="group" aria-label="نوع الدخول">${tab('in', 'دخول')}${tab('code', 'عندي رمز')}${inviteOnly ? '' : tab('up', 'حساب جديد')}</div>
+    <div class="seg" role="group" aria-label="نوع الدخول">${tab('in', 'دخول')}${tab('code', 'عندي رمز')}${inviteOnly ? '' : tab('up', 'تسجيل')}</div>
     ${t === 'code' ? codeForm() : `<form data-form="auth" data-op="${t === 'up' ? 'up' : 'in'}">
       <label class="fld"><span>البريد الإلكتروني</span><input class="in" type="email" name="email" autocomplete="username" required dir="ltr" /></label>
       <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" autocomplete="${t === 'up' ? 'new-password' : 'current-password'}" required minlength="8" dir="ltr" /></label>
@@ -194,7 +194,7 @@ function codeForm() {
     <label class="fld"><span>البريد الذي أضافك به</span><input class="in" type="email" name="email" autocomplete="username" required dir="ltr" value="${esc(email)}"${email ? ' readonly' : ''} /></label>
     <label class="fld"><span>الرمز</span><input class="in" name="code" required dir="ltr" autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX" value="${esc(S.prefCode || '')}" style="letter-spacing:.08em" /></label>
     <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" required minlength="8" dir="ltr" autocomplete="new-password" /></label>
-    <p class="hint" style="margin:0">إن كان لك حساب فاكتب كلمة مرورك الحالية، وإلا فاختر كلمة مرور جديدة (٨ أحرف على الأقل). في رمز إعادة التعيين: كلمة المرور الجديدة.</p>
+    <p class="hint" style="margin:0">لك حساب سابق؟ اكتب كلمة مروره. غير ذلك: اختر كلمة مرور جديدة (٨ أحرف على الأقل).</p>
     <button class="btn primary" type="submit">متابعة</button>
   </form>`;
 }
