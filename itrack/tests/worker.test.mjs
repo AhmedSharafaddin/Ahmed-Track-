@@ -155,6 +155,39 @@ ok('other org header isolated', (await call(U.emp, 'GET', '/api/bootstrap', null
 ok('junk body 400', (await W.fetch(new Request('https://api.test/api/departments', { method: 'POST', headers: { authorization: 'Bearer ' + token(U.gm), 'x-org': ORG }, body: '[1' }), env)).status === 400);
 r = await call(U.gm, 'GET', '/api/bootstrap');
 ok('query budget: bootstrap ok', r.status === 200);
+// المساحة الشخصية: خاصة بصاحبها، والمشاركة اختيار لكل مهمة
+await call(U.gm, 'PATCH', `/api/members/${mEmp2}`, { status: 'active' }); // أُعطّل أعلاه
+const P = (who, ops) => call(who, 'POST', '/api/p', { ops });
+r = await P(U.emp, [
+  { op: 'set', col: 'tasks', id: 't1', data: { title: 'مهمة خاصة', status: 'open' } },
+  { op: 'set', col: 'tasks', id: 't2', data: { title: 'مهمة أُظهرها لمديري', status: 'open', shared: true } },
+  { op: 'set', col: 'areas', id: 'a1', data: { name: 'العمل', shared: true } },
+]);
+ok('personal: save docs', r.status === 200 && r.data.n === 3, r);
+r = await call(U.emp, 'GET', '/api/p/tasks');
+ok('personal: owner reads own tasks', r.data.docs.length === 2 && r.data.docs.find((d) => d.id === 't1').title === 'مهمة خاصة', r.data);
+ok('personal: other employee sees none', (await call(U.emp2, 'GET', '/api/p/tasks')).data.docs.length === 0);
+ok('personal: manager reading /p sees only his own (empty)', (await call(U.sup, 'GET', '/api/p/tasks')).data.docs.length === 0);
+r = await call(U.sup, 'GET', `/api/team/tasks?member=${mEmp}`);
+ok('personal: manager sees only shared task', r.data.tasks.length === 1 && r.data.tasks[0].id === 't2', r.data);
+r = await call(U.mgr, 'GET', '/api/team/tasks');
+ok('personal: upper manager sees shared task, not private', r.data.tasks.length === 1 && r.data.tasks[0].id === 't2', r.data);
+ok('personal: sibling branch sees nothing', (await call(U.emp2, 'GET', '/api/team/tasks')).data.tasks.length === 0);
+ok('personal: sibling cannot query member', (await call(U.emp2, 'GET', `/api/team/tasks?member=${mEmp}`)).status === 403);
+ok('personal: shared flag only for tasks (areas stay private)', DB.sq.prepare("SELECT shared FROM pdocs WHERE col='areas'").get().shared === 0);
+await P(U.emp, [{ op: 'patch', col: 'tasks', id: 't2', data: { shared: false } }]);
+ok('personal: unshare via patch hides it', (await call(U.sup, 'GET', `/api/team/tasks?member=${mEmp}`)).data.tasks.length === 0);
+await P(U.emp, [{ op: 'patch', col: 'tasks', id: 't1', data: { status: 'done', note: 'x' } }]);
+r = await call(U.emp, 'GET', '/api/p/tasks');
+ok('personal: patch merges fields', r.data.docs.find((d) => d.id === 't1').title === 'مهمة خاصة' && r.data.docs.find((d) => d.id === 't1').status === 'done', r.data);
+await P(U.emp, [{ op: 'del', col: 'tasks', id: 't1' }]);
+ok('personal: delete', (await call(U.emp, 'GET', '/api/p/tasks')).data.docs.length === 1);
+ok('personal: bad collection 404', (await call(U.emp, 'GET', '/api/p/members')).status === 404);
+ok('personal: bad id 400', (await P(U.emp, [{ op: 'set', col: 'tasks', id: '../x', data: { a: 1 } }])).status === 400);
+ok('personal: too many ops 400', (await P(U.emp, Array.from({ length: 41 }, (_, i) => ({ op: 'set', col: 'tasks', id: 'x' + i, data: { a: 1 } })))).status === 400);
+ok('personal: oversized doc 413', (await P(U.emp, [{ op: 'set', col: 'tasks', id: 'big', data: { t: 'x'.repeat(9000) } }])).status === 413);
+ok('personal: not in audit', DB.sq.prepare("SELECT COUNT(*) c FROM audit WHERE entity IN ('pdoc','pdocs','personal') OR action LIKE 'personal%' OR data LIKE '%مهمة خاصة%'").get().c === 0);
+
 // CORS: الواجهة فقط
 const pre = async (origin) => (await W.fetch(new Request('https://api.test/api/me', { method: 'OPTIONS', headers: { origin } }), env)).headers;
 ok('cors: app origin allowed', (await pre('https://ahmedsharafaddin.github.io')).get('access-control-allow-origin') === 'https://ahmedsharafaddin.github.io');

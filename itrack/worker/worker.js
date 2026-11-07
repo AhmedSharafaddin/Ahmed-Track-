@@ -57,6 +57,13 @@ const MIGRATIONS = [
     'CREATE INDEX IF NOT EXISTS audit_subj ON audit(org_id, subject_id, at)',
     'CREATE INDEX IF NOT EXISTS audit_at ON audit(org_id, at)',
   ],
+  [
+    // مساحة العضو الشخصية (مهام/مجالات/أهداف/مراجعات/إعدادات): وثائق JSON خاصة بصاحبها.
+    // shared=1 تُضبط من الخادم فقط للمهام التي اختار صاحبها إظهارها لمديريه.
+    `CREATE TABLE IF NOT EXISTS pdocs (member_id TEXT NOT NULL, col TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
+      shared INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (member_id, col, id))`,
+    'CREATE INDEX IF NOT EXISTS pdocs_shared ON pdocs(shared, member_id)',
+  ],
 ];
 
 let schemaAt = 0;
@@ -510,6 +517,51 @@ route('GET', '/api/inbox', async ({ db, v, q }) => {
     review: sub.results.filter((r) => canReview(v, r.member_id)).slice(0, 100).map((r) => ({ member_id: r.member_id, date: r.date, submitted_at: r.submitted_at, late: !!r.late })),
     returned: ret.results,
   };
+});
+
+/* ───── المساحة الشخصية ─────
+   وثائق JSON لكل عضو (مهام، مجالات، أهداف، مراجعات). لا يراها أحد غير صاحبها،
+   إلا مهمة اختار صاحبها `shared:true` فتظهر لمن فوقه فقط (قراءة). لا تدخل سجل التدقيق عمدًا. */
+const PCOLS = new Set(['areas', 'goals', 'tasks', 'reviews']);
+const MAX_OPS = 40; // حد D1 المجاني ٥٠ استعلامًا لكل طلب
+const MAX_DOC = 8000;
+const PID = /^[\w.-]{1,64}$/;
+
+route('GET', '/api/p/:col', async ({ db, v, p }) => {
+  if (!PCOLS.has(p.col)) fail(404, 'not-found', 'المجموعة غير معروفة.');
+  const { results } = await db.prepare('SELECT id, data, updated_at FROM pdocs WHERE member_id = ? AND col = ? ORDER BY updated_at DESC LIMIT 3000').bind(v.id, p.col).all();
+  return { docs: results.map((r) => ({ id: r.id, updated_at: r.updated_at, ...JSON.parse(r.data) })) };
+});
+
+route('POST', '/api/p', async ({ db, v, body }) => {
+  const ops = Array.isArray(body.ops) ? body.ops : [];
+  if (!ops.length || ops.length > MAX_OPS) fail(400, 'invalid', `من 1 إلى ${MAX_OPS} عملية في الطلب.`);
+  const t = now();
+  const stmts = ops.map((o) => {
+    if (!o || !PCOLS.has(o.col) || typeof o.id !== 'string' || !PID.test(o.id)) fail(400, 'invalid', 'عملية غير صحيحة.');
+    if (o.op === 'del') return db.prepare('DELETE FROM pdocs WHERE member_id = ? AND col = ? AND id = ?').bind(v.id, o.col, o.id);
+    if (!['set', 'patch'].includes(o.op) || !o.data || typeof o.data !== 'object' || Array.isArray(o.data)) fail(400, 'invalid', 'عملية غير صحيحة.');
+    const { id: _i, updated_at: _u, ...data } = o.data;
+    const raw = JSON.stringify(data);
+    if (raw.length > MAX_DOC) fail(413, 'too-big', 'الوثيقة أكبر من المسموح.');
+    const canShare = o.col === 'tasks' ? 1 : 0;
+    const merged = o.op === 'patch' ? 'json_patch(pdocs.data, excluded.data)' : 'excluded.data';
+    return db.prepare(`INSERT INTO pdocs (member_id, col, id, data, shared, updated_at) VALUES (?1, ?2, ?3, ?4, CASE WHEN ?6 = 1 AND json_extract(?4, '$.shared') = 1 THEN 1 ELSE 0 END, ?5)
+      ON CONFLICT(member_id, col, id) DO UPDATE SET data = ${merged}, updated_at = excluded.updated_at,
+        shared = CASE WHEN ?6 = 1 AND json_extract(${merged}, '$.shared') = 1 THEN 1 ELSE 0 END`).bind(v.id, o.col, o.id, raw, t, canShare);
+  });
+  await db.batch(stmts);
+  return { ok: true, n: ops.length, at: t };
+});
+
+/** المهام التي اختار موظفوها إظهارها لي (من تحتي فقط، قراءة فقط). */
+route('GET', '/api/team/tasks', async ({ db, v, q }) => {
+  const mid = q.get('member');
+  if (mid && !canSee(v, mid)) fail(403, 'forbidden', 'لا تملك صلاحية عرض هذا الموظف.');
+  const { results } = mid
+    ? await db.prepare("SELECT member_id, id, data, updated_at FROM pdocs WHERE col = 'tasks' AND shared = 1 AND member_id = ? ORDER BY updated_at DESC LIMIT 300").bind(mid).all()
+    : await db.prepare("SELECT p.member_id, p.id, p.data, p.updated_at FROM pdocs p JOIN members m ON m.id = p.member_id WHERE p.col = 'tasks' AND p.shared = 1 AND m.org_id = ? ORDER BY p.updated_at DESC LIMIT 1500").bind(v.org_id).all();
+  return { tasks: results.filter((r) => r.member_id !== v.id && canSee(v, r.member_id)).slice(0, 300).map((r) => ({ member_id: r.member_id, id: r.id, updated_at: r.updated_at, ...JSON.parse(r.data) })) };
 });
 
 /** سجل التدقيق: للمسؤول كاملًا، ولغيره ما يخص من يراهم. */
