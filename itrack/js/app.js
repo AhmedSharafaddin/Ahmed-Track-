@@ -177,6 +177,7 @@ function vAuth() {
   return `<div class="auth"><div class="card">
     <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small>العمل اليومي والمهام في مكان واحد</small></div></div>
     <div class="seg" role="group" aria-label="نوع الدخول">${tab('in', 'دخول')}${tab('code', 'عندي رمز')}${inviteOnly ? '' : tab('up', 'تسجيل')}</div>
+    ${S.info && S.info.ok && S.info.auth !== 'local' ? '<p class="notice warn" role="alert">خادم ITrack على Cloudflare بنسخة قديمة لا تدعم الدخول الجديد. الصق <b>worker.js</b> الأحدث في محرر الـWorker ثم اضغط Deploy.</p>' : ''}
     ${t === 'code' ? codeForm() : `<form data-form="auth" data-op="${t === 'up' ? 'up' : 'in'}">
       <label class="fld"><span>البريد الإلكتروني</span><input class="in" type="email" name="email" autocomplete="username" required dir="ltr" /></label>
       <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" autocomplete="${t === 'up' ? 'new-password' : 'current-password'}" required minlength="8" dir="ltr" /></label>
