@@ -1,7 +1,7 @@
 // ITrack Service Worker: يحفظ واجهة التطبيق للفتح السريع ودون اتصال. البيانات لا تُحفظ هنا (تأتي من الخادم).
 // ⚠️ ارفع VERSION عند أي تعديل على ملفات الواجهة.
-const VERSION = 'it-v6';
-const SHELL = ['./', './index.html', './styles.css', './config.js', './js/app.js', './js/core.js', './manifest.webmanifest', './icons/icon.svg', './fonts/readex-ar.woff2', './fonts/readex-latin.woff2'];
+const VERSION = 'it-v7';
+const SHELL = ['./', './index.html', './styles.css', './config.js', './js/app.js', './js/core.js', './js/session.js', './manifest.webmanifest', './icons/icon.svg', './fonts/readex-ar.woff2', './fonts/readex-latin.woff2'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {

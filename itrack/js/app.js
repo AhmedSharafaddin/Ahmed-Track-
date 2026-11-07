@@ -1,6 +1,6 @@
 // ITrack — الواجهة: الدخول، تقريري اليومي، لوحة الفريق، صفحة الموظف، الهيكل والموظفون، السجل، الإعدادات.
 // كل ما يظهر هنا يأتي من الخادم بعد تطبيق الصلاحيات؛ الواجهة لا تقرر من يرى ماذا.
-import { initAuth, signIn, signUp, resendVerify, resetPassword, signOut, refreshUser, api } from './core.js';
+import { initAuth, signIn, signUp, redeemCode, changePassword, signOut, serverInfo, api } from './core.js';
 
 /* ═════════════ أدوات ═════════════ */
 const $ = (s, r = document) => r.querySelector(s);
@@ -44,7 +44,13 @@ const S = {
   cache: new Map(), loading: new Set(),
   draft: {}, dirty: {}, saveState: {}, // تقريري قيد التحرير لكل يوم
   f: { dep: '', st: '' }, edit: { member: null, pos: null, dep: null }, authTab: 'in',
+  codes: {}, // رموز الدعوة/إعادة التعيين الصادرة في هذه الجلسة (تُعرض مرة واحدة)
+  info: {}, // قدرات الخادم
 };
+// رابط الدعوة ‎#/code/XXXX-XXXX-XXXX‎: يفتح «عندي رمز» معبّأً
+const codeFromHash = () => { const m = location.hash.match(/^#\/code\/([A-Za-z0-9-]{12,16})/); return m ? m[1].toUpperCase() : ''; };
+if (codeFromHash()) { S.authTab = 'code'; S.prefCode = codeFromHash(); }
+serverInfo().then((i) => { S.info = i || {}; render(); });
 const view = $('#view');
 
 /** تحميل بيانات مرة واحدة ثم إعادة الرسم. الشاشات تطلب ما تحتاجه فقط. */
@@ -81,7 +87,10 @@ function home() { return hasTeam() ? '#/team' : '#/day'; }
 // الصندوق يُحدَّث عند العودة للتبويب أو بعد ٣٠ ثانية، لا عند كل تنقّل (يوفّر ٦ استعلامات لكل شاشة)
 let inboxAt = 0;
 const freshInbox = () => { if (Date.now() - inboxAt > 30000) { drop('inbox'); inboxAt = Date.now(); } };
-window.addEventListener('hashchange', () => { freshInbox(); render(); window.scrollTo(0, 0); });
+// الهيكل يُعاد تحميله عند فتحه (من انضم أو تغيّرت حالته منذ آخر تحميل)
+let bootAt = Date.now();
+const freshBoot = () => { if (S.boot && route().name === 'org' && Date.now() - bootAt > 5000) { bootAt = Date.now(); loadBoot(true); } };
+window.addEventListener('hashchange', () => { freshInbox(); freshBoot(); render(); window.scrollTo(0, 0); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.boot) { drop('inbox', 'day|'); inboxAt = Date.now(); render(); } });
 
 /* ═════════════ الرسم ═════════════ */
@@ -134,11 +143,11 @@ function paintNav() {
 function screen() {
   if (S.user === undefined) return skel();
   if (!S.user) return vAuth();
-  if (!S.user.emailVerified) return vVerify();
   if (S.err) return vGateError();
   if (!S.me) return skel();
-  if (!S.org || !S.me.orgs.find((o) => o.id === S.org)) {
-    if (S.me.orgs.length === 1) { S.org = S.me.orgs[0].id; store.set('it:org', S.org); loadBoot(); return skel(); }
+  const joined = S.me.orgs.filter((o) => !o.invited);
+  if (S.prefCode || !S.org || !joined.find((o) => o.id === S.org)) {
+    if (!S.prefCode && joined.length === 1 && S.me.orgs.length === 1) { S.org = joined[0].id; store.set('it:org', S.org); loadBoot(); return skel(); }
     return vNoOrg();
   }
   if (!S.boot) return skel();
@@ -162,31 +171,44 @@ const errCard = (d) => `<div class="card"><p class="hint" role="alert">${esc(d.e
 
 /* ═════════════ الدخول والانضمام ═════════════ */
 function vAuth() {
-  const up = S.authTab === 'up';
+  const t = S.authTab;
+  const tab = (k, l) => `<button type="button" data-act="auth-tab" data-v="${k}" aria-pressed="${t === k}">${l}</button>`;
+  const inviteOnly = S.info.signup === 'invite';
   return `<div class="auth"><div class="card">
-    <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small>توثيق الإنجاز اليومي للفريق</small></div></div>
-    <div class="seg" role="group" aria-label="نوع الدخول"><button type="button" data-act="auth-tab" data-v="in" aria-pressed="${!up}">دخول</button><button type="button" data-act="auth-tab" data-v="up" aria-pressed="${up}">حساب جديد</button></div>
-    <form data-form="auth" data-op="${up ? 'up' : 'in'}">
-      <label class="fld"><span>البريد الإلكتروني</span><input class="in" type="email" name="email" autocomplete="email" required dir="ltr" /></label>
-      <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" autocomplete="${up ? 'new-password' : 'current-password'}" required minlength="${up ? 8 : 6}" dir="ltr" /></label>
-      <button class="btn primary" type="submit">${up ? 'إنشاء الحساب' : 'دخول'}</button>
-    </form>
-    ${up ? '<p class="hint alt">إن دعاك مسؤول جهتك فاستخدم نفس البريد الذي أضافك به.</p>' : '<p class="alt"><button class="link" data-act="reset">نسيت كلمة المرور؟</button></p>'}
+    <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small>العمل اليومي والمهام في مكان واحد</small></div></div>
+    <div class="seg" role="group" aria-label="نوع الدخول">${tab('in', 'دخول')}${tab('code', 'عندي رمز')}${inviteOnly ? '' : tab('up', 'حساب جديد')}</div>
+    ${t === 'code' ? codeForm() : `<form data-form="auth" data-op="${t === 'up' ? 'up' : 'in'}">
+      <label class="fld"><span>البريد الإلكتروني</span><input class="in" type="email" name="email" autocomplete="username" required dir="ltr" /></label>
+      <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" autocomplete="${t === 'up' ? 'new-password' : 'current-password'}" required minlength="8" dir="ltr" /></label>
+      <button class="btn primary" type="submit">${t === 'up' ? 'إنشاء الحساب' : 'دخول'}</button>
+    </form>`}
+    ${t === 'up' ? '<p class="hint alt">لإنشاء جهة جديدة لفريقك. إن دعاك مسؤول جهتك فاختر «عندي رمز».</p>'
+      : t === 'in' ? '<p class="alt"><button class="link" data-act="reset">نسيت كلمة المرور؟</button></p>' : ''}
   </div></div>`;
 }
-function vVerify() {
-  return `<div class="auth"><div class="card">
-    <h1>أكّد بريدك الإلكتروني</h1>
-    <p>أرسلنا رابط التأكيد إلى <b dir="ltr">${esc(S.user.email)}</b>. افتحه ثم عد هنا.</p>
-    <p class="hint">التأكيد يمنع أي شخص من الدخول ببريد غيره.</p>
-    <div class="form-grid" style="margin-top:14px"><button class="btn primary" data-act="verified">أكّدت، تابع</button><button class="btn" data-act="resend">أعد إرسال الرابط</button><button class="btn ghost" data-act="signout">خروج</button></div>
-  </div></div>`;
+/** رمز من المسؤول: دعوة للانضمام، أو إعادة تعيين كلمة المرور. */
+function codeForm() {
+  const email = S.me?.email || '';
+  return `<form data-form="code" class="form-grid">
+    <p class="hint" style="margin:0">أدخل الرمز الذي أرسله لك مسؤول جهتك (دعوة أو إعادة تعيين كلمة المرور).</p>
+    <label class="fld"><span>البريد الذي أضافك به</span><input class="in" type="email" name="email" autocomplete="username" required dir="ltr" value="${esc(email)}"${email ? ' readonly' : ''} /></label>
+    <label class="fld"><span>الرمز</span><input class="in" name="code" required dir="ltr" autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX" value="${esc(S.prefCode || '')}" style="letter-spacing:.08em" /></label>
+    <label class="fld"><span>كلمة المرور</span><input class="in" type="password" name="pass" required minlength="8" dir="ltr" autocomplete="new-password" /></label>
+    <p class="hint" style="margin:0">إن كان لك حساب فاكتب كلمة مرورك الحالية، وإلا فاختر كلمة مرور جديدة (٨ أحرف على الأقل). في رمز إعادة التعيين: كلمة المرور الجديدة.</p>
+    <button class="btn primary" type="submit">متابعة</button>
+  </form>`;
 }
 function vGateError() {
   return `<div class="auth"><div class="card"><h1>تعذّر الاتصال</h1><p role="alert">${esc(S.err)}</p><div class="form-grid"><button class="btn primary" data-act="retry-gate">إعادة المحاولة</button><button class="btn ghost" data-act="signout">خروج</button></div></div></div>`;
 }
 function vNoOrg() {
-  const list = S.me.orgs;
+  const list = S.me.orgs.filter((o) => !o.invited);
+  const inv = S.me.orgs.filter((o) => o.invited);
+  if (S.prefCode || inv.length) return `<div class="auth"><div class="card">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small dir="ltr">${esc(S.me.email)}</small></div></div>
+    <h1>${inv.length ? `دعوة إلى «${esc(inv[0].name)}»` : 'رمز من المسؤول'}</h1>${codeForm()}
+    ${list.length || inv.length ? `<p class="alt"><button class="link" data-act="skip-code">لاحقًا</button></p>` : ''}
+  </div></div>`;
   return `<div class="auth"><div class="card">
     <div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40" /><div><b>ITrack</b><small dir="ltr">${esc(S.me.email)}</small></div></div>
     ${list.length ? `<h1>اختر الجهة</h1><div class="form-grid">${list.map((o) => `<button class="btn" data-act="pick-org" data-id="${esc(o.id)}">${esc(o.name)} · ${ROLE[o.role]}</button>`).join('')}</div><hr style="margin:18px 0;border:0;border-top:1px solid var(--line)" />`
@@ -463,7 +485,18 @@ function memberForm(m) {
       <button type="button" class="btn ${m.status === 'disabled' ? '' : 'warn'}" data-act="toggle-member" data-id="${esc(m.id)}">${m.status === 'disabled' ? 'إعادة التفعيل' : 'تعطيل الحساب'}</button>` : ''}</div>
   </form>`;
 }
-const inviteText = (m) => `مرحبًا ${m.name}،\nأُضفت إلى «${S.boot.org.name}» على ITrack لتوثيق إنجازك اليومي.\n١) افتح: ${location.origin}${location.pathname}\n٢) اختر «حساب جديد» بهذا البريد: ${m.email}\n٣) أكّد بريدك من الرسالة التي تصلك، ثم ادخل.`;
+const appLink = () => `${location.origin}${location.pathname}`;
+const inviteText = (m, c) => (c.kind === 'reset'
+  ? `مرحبًا ${m.name}،\nرمز إعادة تعيين كلمة مرورك في ITrack (صالح ٢٤ ساعة):\n${c.code}\nافتح: ${appLink()}#/code/${c.code}\nثم اكتب بريدك (${m.email}) وكلمة المرور الجديدة.`
+  : `مرحبًا ${m.name}،\nأُضفت إلى «${S.boot.org.name}» على ITrack لتوثيق إنجازك اليومي وتنظيم مهامك.\n١) افتح الرابط: ${appLink()}#/code/${c.code}\n٢) بريدك: ${m.email}\n٣) الرمز: ${c.code} (صالح ١٤ يومًا)\n٤) اختر كلمة مرور، وستدخل مباشرة.\nيمكنك تثبيت التطبيق من المتصفح: «إضافة إلى الشاشة الرئيسية».`);
+function codeBox(m) {
+  let c = S.codes[m.id];
+  if (c && c.kind === 'invite' && m.joined) c = null; // انضم بالفعل: رمز الدعوة لم يعد مفيدًا
+  if (m.status === 'disabled') return '';
+  if (!c) return `<div class="row" style="margin-top:12px"><button type="button" class="btn sm" data-act="issue-code" data-id="${esc(m.id)}">${m.joined ? 'رمز إعادة تعيين كلمة المرور' : 'إنشاء رمز دعوة'}</button></div>
+    <p class="hint" style="margin-top:6px">${m.joined ? 'إن نسي كلمة مروره: أصدر رمزًا وأرسله له. الرمز القديم يُلغى.' : 'الرمز يُعرض مرة واحدة؛ إن ضاع أصدر رمزًا جديدًا.'}</p>`;
+  return `<p class="hint" style="margin-top:12px">${c.kind === 'reset' ? 'رمز إعادة التعيين' : 'رسالة الدعوة'} (أرسلها بالبريد أو واتساب — لن تظهر مرة أخرى):</p><pre class="invite">${esc(inviteText(m, c))}</pre><button class="btn sm" data-act="copy-invite" data-id="${esc(m.id)}" style="margin-top:8px">نسخ الرسالة</button>`;
+}
 function orgMembers() {
   const all = members().filter((m) => m.email !== undefined);
   const groups = new Map();
@@ -474,12 +507,12 @@ function orgMembers() {
       <div class="nums"><span>${ROLE[m.role]}</span>${posById(m.position_id) ? `<span>· ${esc(posById(m.position_id).title)}</span>` : ''}${memberById(m.manager_id) ? `<span>· يتبع ${esc(memberById(m.manager_id).name)}</span>` : ''}</div>
       ${m.status === 'invited' ? '<span class="tag out">مدعو، لم ينضم</span>' : m.status === 'disabled' ? '<span class="tag blocked">معطّل</span>' : '<span class="tag done">نشط</span>'}
       <button class="btn sm" data-act="edit-member" data-id="${open ? '' : esc(m.id)}" aria-expanded="${open}">${open ? 'إغلاق' : 'تعديل'}</button></div>
-      ${open ? `<div class="edit-box">${memberForm(m)}${m.status === 'invited' ? `<p class="hint" style="margin-top:12px">رسالة الدعوة (أرسلها له بالبريد أو واتساب):</p><pre class="invite">${esc(inviteText(m))}</pre><button class="btn sm" data-act="copy-invite" data-id="${esc(m.id)}" style="margin-top:8px">نسخ الرسالة</button>` : ''}</div>` : ''}</div>`;
+      ${open ? `<div class="edit-box">${memberForm(m)}${codeBox(m)}</div>` : ''}</div>`;
   };
   return `<div class="grid2"><div class="card"><h2>${I('people', 'd')}الأعضاء · ${n(all.length)}</h2>
       ${[...groups.entries()].map(([k, ms]) => `<p class="grp">${esc(depById(k)?.name || 'بلا إدارة')}</p><div class="people">${ms.map(row).join('')}</div>`).join('')}</div>
     <div class="stack"><div class="card"><h2>${I('plus')}إضافة عضو</h2>${memberForm(null)}
-      <p class="hint" style="margin-top:12px">بعد الإضافة تظهر رسالة دعوة تنسخها له. يدخل بنفس البريد ويؤكّده، فيُربط بمكانه تلقائيًا.</p></div>
+      <p class="hint" style="margin-top:12px">بعد الإضافة تظهر رسالة دعوة فيها رابط ورمز. يفتحها ويختار كلمة مرور فيُربط بمكانه تلقائيًا.</p></div>
       <div class="card"><h2>${I('doc')}الأدوار</h2><ul class="hint" style="margin:0;padding-inline-start:18px;display:grid;gap:4px"><li><b>مسؤول الجهة</b>: يرى الجميع ويدير الهيكل والسجل.</li><li><b>مدير</b>: يرى من يتبعونه على أي عمق، يعتمد ويعيد.</li><li><b>موظف</b>: يرى تقاريره وتوصيفه فقط.</li></ul></div></div></div>`;
 }
 function posEditor(p) {
@@ -538,7 +571,13 @@ function vSettings() {
   return `<div class="wrap">${vh('الإعدادات')}<div class="grid2"><div class="stack">
     <div class="card"><h2>${I('sun')}المظهر</h2><div class="row">${[['petrol', 'بترولي'], ['navy', 'كحلي'], ['aqua', 'سماوي']].map(([k, l]) => `<button class="chip" data-act="theme" data-v="${k}" aria-pressed="${th === k}">${l}</button>`).join('')}</div></div>
     <div class="card"><h2>${I('user')}الحساب</h2><p dir="ltr" style="margin:0 0 6px;text-align:right">${esc(S.me.email)}</p><p class="hint">${esc(S.boot.me.name)} · ${ROLE[myRole()]} في «${esc(S.boot.org.name)}»</p>
-      <div class="row" style="margin-top:12px">${S.me.orgs.length > 1 ? '<button class="btn" data-act="switch-org">تبديل الجهة</button>' : ''}<button class="btn" data-act="signout">خروج</button></div></div></div>
+      <div class="row" style="margin-top:12px">${S.me.orgs.length > 1 ? '<button class="btn" data-act="switch-org">تبديل الجهة</button>' : ''}<button class="btn" data-act="signout">خروج</button></div></div>
+    <div class="card"><h2>${I('gear')}تغيير كلمة المرور</h2><form data-form="password" class="form-grid">
+      <input type="email" name="u" autocomplete="username" value="${esc(S.me.email)}" hidden />
+      <label class="fld"><span>الحالية</span><input class="in" type="password" name="old" required autocomplete="current-password" dir="ltr" /></label>
+      <label class="fld"><span>الجديدة (٨ أحرف على الأقل)</span><input class="in" type="password" name="pass" required minlength="8" autocomplete="new-password" dir="ltr" /></label>
+      <label class="fld"><span>تأكيد الجديدة</span><input class="in" type="password" name="pass2" required minlength="8" autocomplete="new-password" dir="ltr" /></label>
+      <button class="btn" type="submit">تغيير</button></form></div></div>
     <div class="card"><h2>${I('doc')}عن ITrack</h2><p class="hint">نسخة تجريبية. بياناتك في خادم الجهة، والصلاحيات تُفرض في الخادم. كل رفع واعتماد وإعادة يُسجَّل في سجل لا يُعدَّل.</p></div></div></div>`;
 }
 
@@ -554,14 +593,13 @@ document.addEventListener('click', async (e) => {
   const d = curDay();
   switch (act) {
     case 'auth-tab': S.authTab = el.dataset.v; render(); break;
-    case 'reset': {
-      const email = $('[name=email]')?.value.trim();
-      if (!email) { toast('اكتب بريدك أولًا.'); $('[name=email]')?.focus(); break; }
-      resetPassword(email).then(() => toast('أرسلنا رابط تعيين كلمة المرور.'), (er) => toast(er.message));
+    case 'reset': S.authTab = 'code'; render(); toast('اطلب من مسؤول جهتك «رمز إعادة تعيين» ثم أدخله هنا.'); break;
+    case 'skip-code': S.prefCode = ''; S.me = { ...S.me, orgs: S.me.orgs.filter((o) => !o.invited) }; render(); break;
+    case 'issue-code': {
+      try { S.codes[el.dataset.id] = await call('POST', `/api/members/${el.dataset.id}/code`, {}); drop('audit'); render(); }
+      catch (er) { toast(er.message); }
       break;
     }
-    case 'verified': try { S.user = await refreshUser(); if (!S.user.emailVerified) toast('لم يُؤكَّد بعد. افتح الرابط في بريدك.'); else loadMe(); render(); } catch (er) { toast(er.message); } break;
-    case 'resend': resendVerify().then(() => toast('أُعيد الإرسال.'), (er) => toast(er.message)); break;
     case 'signout': if (Object.values(S.dirty).some(Boolean) && !confirm('تغييرات غير محفوظة. خروج؟')) break; store.del('it:org'); signOut(); break;
     case 'retry-gate': S.err = null; S.me = null; loadMe(); render(); break;
     case 'retry': S.cache.clear(); render(); break;
@@ -589,7 +627,7 @@ document.addEventListener('click', async (e) => {
       mutate(() => call('PATCH', `/api/members/${m.id}`, { status: on ? 'active' : 'disabled' }), on ? 'أُعيد التفعيل.' : 'عُطّل الحساب.');
       break;
     }
-    case 'copy-invite': { const m = memberById(el.dataset.id); if (m) navigator.clipboard?.writeText(inviteText(m)).then(() => toast('نُسخت رسالة الدعوة.'), () => toast('انسخها يدويًا من المربع.')); break; }
+    case 'copy-invite': { const m = memberById(el.dataset.id); const c = S.codes[el.dataset.id]; if (m && c) navigator.clipboard?.writeText(inviteText(m, c)).then(() => toast('نُسخت رسالة الدعوة.'), () => toast('انسخها يدويًا من المربع.')); break; }
     case 'edit-pos': S.edit.pos = el.dataset.id || null; render(); if (S.edit.pos) setTimeout(() => view.querySelector('[data-form=position] [name=title]')?.focus(), 40); break;
     case 'resp-add': { const box = el.closest('form').querySelector('.resp-rows'); const tmp = document.createElement('div'); tmp.innerHTML = posEditor({ responsibilities: [{ active: 1 }] }); const row = tmp.querySelector('.resp-row'); box.appendChild(row); row.querySelector('[name=rt]').focus(); break; }
     case 'resp-del': el.closest('.resp-row').remove(); break;
@@ -636,8 +674,28 @@ document.addEventListener('submit', async (e) => {
   switch (form.dataset.form) {
     case 'auth': {
       if (btn) btn.disabled = true;
-      try { if (form.dataset.op === 'up') { await signUp(get('email'), fd.get('pass')); toast('أُنشئ الحساب. أكّد بريدك.'); } else await signIn(get('email'), fd.get('pass')); }
+      try { if (form.dataset.op === 'up') { await signUp(get('email'), fd.get('pass')); toast('أُنشئ الحساب.'); } else await signIn(get('email'), fd.get('pass')); }
       catch (er) { toast(er.message); if (btn) btn.disabled = false; }
+      break;
+    }
+    case 'code': {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await redeemCode(get('email'), get('code'), fd.get('pass'));
+        S.prefCode = '';
+        if (location.hash.startsWith('#/code/')) history.replaceState(null, '', location.pathname + location.search);
+        if (r.org) { S.org = r.org; store.set('it:org', r.org); }
+        S.boot = null; S.cache.clear(); await loadMe(); if (S.org) loadBoot();
+        toast(r.kind === 'reset' ? 'عُيّنت كلمة المرور الجديدة.' : 'انضممت إلى الجهة.');
+      } catch (er) { toast(er.message); if (btn) btn.disabled = false; }
+      break;
+    }
+    case 'password': {
+      if (btn) btn.disabled = true;
+      if (fd.get('pass') !== fd.get('pass2')) { toast('كلمتا المرور غير متطابقتين.'); if (btn) btn.disabled = false; break; }
+      try { await changePassword(fd.get('old'), fd.get('pass')); form.reset(); toast('غُيّرت كلمة المرور، وخرجت أجهزتك الأخرى.'); }
+      catch (er) { toast(er.message); }
+      if (btn) btn.disabled = false;
       break;
     }
     case 'org': {
@@ -669,8 +727,8 @@ document.addEventListener('submit', async (e) => {
       const id = form.dataset.id;
       const body = { name: get('name'), role: get('role'), manager_id: get('manager_id') || null, department_id: get('department_id') || null, position_id: get('position_id') || null };
       if (!id) body.email = get('email');
-      const ok = await mutate(() => (id ? call('PATCH', `/api/members/${id}`, body) : call('POST', '/api/members', body)), id ? 'حُفظ.' : 'أُضيف. افتح «تعديل» لنسخ رسالة الدعوة.');
-      if (ok) { if (!id) { form.reset(); S.edit.member = ok.id; } else S.edit.member = null; render(); }
+      const ok = await mutate(() => (id ? call('PATCH', `/api/members/${id}`, body) : call('POST', '/api/members', body)), id ? 'حُفظ.' : 'أُضيف. انسخ رسالة الدعوة وأرسلها له.');
+      if (ok) { if (!id) { form.reset(); S.edit.member = ok.id; if (ok.code) S.codes[ok.id] = ok; } else S.edit.member = null; render(); }
       break;
     }
     case 'position': {
@@ -714,7 +772,7 @@ async function loadMe() {
 async function loadBoot(quiet) {
   try { S.boot = await call('GET', '/api/bootstrap'); }
   catch (e) {
-    if (['not-member', 'verify-email'].includes(e.code)) { S.org = null; store.del('it:org'); S.boot = null; await loadMe(); }
+    if (['not-member', 'verify-email', 'need-code'].includes(e.code)) { S.org = null; store.del('it:org'); S.boot = null; await loadMe(); }
     else if (!quiet) S.err = e.message;
     else toast(e.message);
   }

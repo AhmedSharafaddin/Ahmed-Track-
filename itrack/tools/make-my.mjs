@@ -17,9 +17,12 @@ export function build() {
   must('<script type="module" src="../../js/app.js"></script>', `<script type="module">
     // داخل ITrack: البيانات في خادم ITrack (وثائق خاصة بصاحبها)، والدخول بنفس جلسة ITrack.
     import { apiUrl } from '../config.js';
+    import { session } from '../js/session.js';
     const org = () => { try { return JSON.parse(localStorage.getItem('it:org')); } catch (e) { return null; } };
-    if (!org()) location.replace('../'); // لا جهة بعد: أنشئها من ITrack أولًا
-    globalThis.CC_BACKEND = { api: apiUrl, ai: false, org }; // ai: يُفعَّل حين يدعمه الخادم
+    if (!org() || !session()) location.replace('../'); // الدخول واختيار الجهة من ITrack أولًا
+    // الذكاء الاصطناعي (الصوت والمحضر) يُفعَّل تلقائيًا إن وفّره خادم الجهة
+    const info = await fetch(apiUrl + '/api/health').then((r) => r.json()).catch(() => ({}));
+    globalThis.CC_BACKEND = { api: apiUrl, ai: !!info.ai, org };
     await import('../../js/app.js');
   </script>`);
   must('<nav id="nav" class="nav"></nav>', '<a class="ni itrack-back" href="../" data-nosync><svg class="ic" aria-hidden="true"><use href="#d-people"/></svg><span>العمل: تقريري والفريق</span></a>\n      <nav id="nav" class="nav"></nav>');

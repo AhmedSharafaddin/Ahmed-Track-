@@ -254,24 +254,21 @@ class CloudAdapter {
 
 /* ───────────── محرّك ITrack (D1) ─────────────
    نفس واجهة CloudAdapter لكن فوق خادم ITrack: وثائق JSON خاصة بصاحبها (/api/p)، والمهمة التي عليها
-   shared:true يراها مديروه فقط. الدخول: Firebase Auth بنفس جلسة ITrack (تطبيق باسم 'itrack') ⇒ دخول واحد للاثنين.
+   shared:true يراها مديروه فقط. الدخول: جلسة ITrack الداخلية نفسها ⇒ دخول واحد للاثنين.
    الكتابة: تحديث فوري في الواجهة ← طابور محفوظ على الجهاز ← دفعات حتى ٤٠ عملية، وإعادة محاولة عند انقطاع الاتصال. */
 const stable = (o) => (o && typeof o === 'object' ? (Array.isArray(o) ? `[${o.map(stable)}]` : `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)}}`) : JSON.stringify(o));
 class ItrackAdapter {
   kind = 'cloud';
   constructor(cfg) { this.cfg = cfg; this.wq = []; this.sending = []; this.confirmed = false; }
 
-  async init() {
-    const [appMod, authMod] = await Promise.all([import(FB + 'firebase-app.js'), import(FB + 'firebase-auth.js')]);
-    this.authMod = authMod;
-    this.auth = authMod.getAuth(appMod.initializeApp(firebaseConfig, 'itrack'));
-  }
-  onAuth(cb) { return this.authMod.onAuthStateChanged(this.auth, cb); }
-  signIn(email, pass) { return this.authMod.signInWithEmailAndPassword(this.auth, email, pass); }
-  signUp(email, pass) { return this.authMod.createUserWithEmailAndPassword(this.auth, email, pass); }
-  resetPassword(email) { return this.authMod.sendPasswordResetEmail(this.auth, email); }
-  signOut() { return this.authMod.signOut(this.auth); }
-  idToken() { return this.auth.currentUser ? this.auth.currentUser.getIdToken() : Promise.resolve(null); }
+  // الدخول: جلسة ITrack الداخلية نفسها (itrack/js/session.js) ⇒ دخول واحد للعمل ولمهامي، بلا Firebase.
+  async init() { this.ses = await import('../itrack/js/session.js'); }
+  onAuth(cb) { return this.ses.onSession((s) => cb(s ? { uid: s.uid, email: s.email } : null)); }
+  signIn(email, pass) { return this.ses.login(this.cfg.api, email, pass); }
+  signUp(email, pass) { return this.ses.signup(this.cfg.api, email, pass); }
+  resetPassword() { return Promise.reject(Object.assign(new Error('اطلب من مسؤول جهتك رمز إعادة تعيين.'), { code: 'no-reset' })); }
+  signOut() { this.ses.logout(this.cfg.api); return Promise.resolve(); }
+  idToken() { return Promise.resolve(this.ses.session()?.token || null); }
 
   async _api(method, path, body) {
     const token = await this.idToken();
@@ -279,6 +276,7 @@ class ItrackAdapter {
     const org = this.cfg.org?.();
     if (!org) throw Object.assign(new Error('no-org'), { code: 'no-org' });
     const res = await fetch(this.cfg.api + path, { method, headers: { authorization: `Bearer ${token}`, 'x-org': org, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    if (res.status === 401) this.ses.expire();
     if (!res.ok) { let d = {}; try { d = await res.json(); } catch {} throw Object.assign(new Error(d.message || `HTTP ${res.status}`), { code: d.error || 'http', status: res.status }); }
     return res.json();
   }

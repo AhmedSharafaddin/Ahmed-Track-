@@ -1,4 +1,4 @@
-// اختبار شامل للواجهة مع الخادم الحقيقي (node:sqlite، قاعدة جديدة في كل تشغيل) ودخول وهمي:
+// اختبار شامل للواجهة مع الخادم الحقيقي (node:sqlite، قاعدة جديدة في كل تشغيل) وحسابات ITrack الداخلية:
 //   AXE=/path/axe.min.js node itrack/tests/e2e.js
 const { chromium } = require(process.env.PW || '/opt/npm-tools/node_modules/playwright');
 const fs = require('fs'); const path = require('path');
@@ -12,9 +12,9 @@ let pass = 0, fail = 0;
 const ok = (n, c, x) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 500)); } };
 async function page(b, vp = { width: 1366, height: 900 }, theme = 'petrol') {
   const ctx = await b.newContext({ viewport: vp, isMobile: vp.width < 500, hasTouch: vp.width < 500 });
-  await ctx.route(/www\.gstatic\.com\/firebasejs\/10\.12\.2\/(firebase-[a-z]+\.js)/, (r) => { const f = r.request().url().match(/(firebase-[a-z]+\.js)/)[1]; r.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(path.join(__dirname, 'fakefb', f)) }); });
+  await ctx.route(/gstatic\.com/, (r) => { p.errs.push('external request: ' + r.request().url()); r.abort(); }); // لا اعتماد على خدمات خارجية
   await ctx.addInitScript((t) => { try { if (!localStorage.getItem('it:theme')) localStorage.setItem('it:theme', JSON.stringify(t)); } catch {} }, theme);
-  const p = await ctx.newPage(); p.errs = [];
+  var p = await ctx.newPage(); p.errs = [];
   p.on('pageerror', (e) => p.errs.push(e.message));
   p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) p.errs.push(m.text()); });
   p.on('response', (r) => { if (r.url().includes('/api/') && r.status() >= 500) p.errs.push('API ' + r.status() + ' ' + r.url()); });
@@ -23,13 +23,14 @@ async function page(b, vp = { width: 1366, height: 900 }, theme = 'petrol') {
 const wait = (p, ms = 350) => p.waitForTimeout(ms);
 const axe = async (p, name) => { await p.addScriptTag({ content: AX }); const v = await p.evaluate(async () => (await axe.run(document, { runOnly: ['wcag2a', 'wcag2aa'] })).violations.map((x) => [x.id, x.nodes.length, x.nodes[0].target.join(' ').slice(0, 80), ((x.nodes[0].any[0] || {}).message || '').slice(0, 120)])); ok('axe ' + name, !v.length, v); };
 const text = (p, s) => p.$eval(s, (e) => e.textContent.replace(/\s+/g, ' ').trim());
+const CODES = {};
+/** الموظف يفتح رابط الدعوة ويختار كلمة مرور ⇒ ينضم مباشرة. */
 async function join(p, email, pass = 'Passw0rd!') {
-  await p.goto(BASE); await p.waitForSelector('[data-form=auth]');
-  await p.click('[data-act=auth-tab][data-v=up]'); await p.waitForSelector('[data-form=auth][data-op=up]');
-  await p.fill('[name=email]', email); await p.fill('[name=pass]', pass); await p.click('[data-form=auth] button[type=submit]');
-  await p.waitForSelector('[data-act=verified]', { timeout: 8000 }).catch(async (e) => { console.log('JOIN FAIL', email, (await p.textContent('body')).replace(/\s+/g, ' ').slice(0, 300), p.errs); throw e; });
-  await p.evaluate((e) => window.__verify(e.toLowerCase()), email);
-  await p.click('[data-act=verified]'); await wait(p, 700);
+  await p.goto(BASE + '#/code/' + CODES[email]); await p.waitForSelector('[data-form=code]');
+  ok('invite link prefills code (' + email + ')', (await p.inputValue('[data-form=code] [name=code]')) === CODES[email]);
+  await p.fill('[data-form=code] [name=email]', email); await p.fill('[data-form=code] [name=pass]', pass); await p.click('[data-form=code] button[type=submit]');
+  await p.waitForSelector('body[data-mode=app]', { timeout: 8000 }).catch(async (e) => { console.log('JOIN FAIL', email, (await p.textContent('body')).replace(/\s+/g, ' ').slice(0, 300), p.errs); throw e; });
+  await wait(p, 700);
 }
 (async () => {
   await new Promise((r) => setTimeout(r, 1200));
@@ -40,12 +41,9 @@ async function join(p, email, pass = 'Passw0rd!') {
   await axe(gm, 'auth screen');
   await gm.click('[data-act=auth-tab][data-v=up]'); await gm.waitForSelector('[data-form=auth][data-op=up]');
   await gm.fill('[name=email]', 'gm@org.test'); await gm.fill('[name=pass]', 'Passw0rd!'); await gm.click('[data-form=auth] button[type=submit]');
-  await gm.waitForSelector('[data-act=verified]');
-  ok('verify screen after signup', (await text(gm, 'h1')).includes('أكّد'));
-  await gm.click('[data-act=verified]'); await wait(gm, 400);
-  ok('unverified stays on verify', !!(await gm.$('[data-act=verified]')));
-  await gm.evaluate(() => window.__verify('gm@org.test')); await gm.click('[data-act=verified]'); await gm.waitForSelector('[data-form=org]');
-  ok('no org → create form', true);
+  await gm.waitForSelector('[data-form=org]');
+  ok('signup → create org form (no email verification needed)', true);
+  ok('session token stored, no password stored', await gm.evaluate(() => { const s = JSON.parse(localStorage.getItem('it:session')); return s.token.startsWith('it_') && !JSON.stringify(localStorage).includes('Passw0rd'); }));
   await gm.fill('[data-form=org] [name=name]', 'إدارة الخدمات اللوجستية'); await gm.fill('[data-form=org] [name=my_name]', 'أحمد');
   await gm.click('[data-form=org] button'); await gm.waitForSelector('.tabs'); await wait(gm, 500);
   ok('lands on structure/departments', gm.url().endsWith('#/org/departments'), gm.url());
@@ -71,10 +69,11 @@ async function join(p, email, pass = 'Passw0rd!') {
     await gm.selectOption(`${f} [name=department_id]`, { label: 'اللوجستيات' });
     if (pos) await gm.selectOption(`${f} [name=position_id]`, { label: pos });
     await gm.click(`${f} button[type=submit]`); await wait(gm, 600);
+    CODES[email.toLowerCase()] = (await text(gm, '.invite')).match(/الرمز: ([A-Z0-9-]{14})/)[1];
   };
   await addMember('sup@org.test', 'سالم', 'manager', 'أحمد (مسؤول الجهة)');
   await addMember('Sara@Org.test', 'سارة', 'employee', 'سالم (مدير)', 'أمين مخزن');
-  ok('invite text shown for new member', (await text(gm, '.invite')).includes('sara@org.test'));
+  ok('invite text shown for new member with link + code', (await text(gm, '.invite')).includes('sara@org.test') && (await text(gm, '.invite')).includes('#/code/' + CODES['sara@org.test']));
   ok('members listed', (await gm.$$('.card .people .person')).length === 3);
   await axe(gm, 'members (petrol desk)');
   await gm.screenshot({ path: `${OUT}/it_members.png` });
@@ -147,9 +146,20 @@ async function join(p, email, pass = 'Passw0rd!') {
   await emp.goto(BASE + '#/day'); await wait(emp, 600); await axe(emp, 'day approved (petrol mobile)');
   await emp.goto(BASE + '#/team'); await wait(emp, 500);
   ok('employee blocked from team page', (await text(emp, '.wrap')).includes('ليست ضمن صلاحياتك'));
+  // ٧) رمز إعادة تعيين كلمة المرور من المسؤول، وتغيير كلمة المرور من الإعدادات
+  await gm.goto(BASE + '#/org/members'); await wait(gm, 500);
+  if (!(await gm.$('.edit-box'))) { await gm.click('.person:has-text("سارة") [data-act=edit-member]'); await wait(gm, 300); }
+  ok('stale invite hidden after member joined', !(await gm.$('.invite')));
+  await gm.click('[data-act=issue-code]'); await gm.waitForSelector('.invite'); 
+  ok('admin issues reset code for joined member', (await text(gm, '.invite')).includes('إعادة تعيين'));
+  await sup.goto(BASE + '#/settings'); await sup.waitForSelector('[data-form=password]');
+  await sup.fill('[data-form=password] [name=old]', 'Passw0rd!'); await sup.fill('[data-form=password] [name=pass]', 'NewPassw0rd!'); await sup.fill('[data-form=password] [name=pass2]', 'NewPassw0rd!');
+  await sup.click('[data-form=password] button[type=submit]'); await wait(sup, 900);
+  ok('password changed from settings', (await text(sup, '#toast')).includes('غُيّرت'), await text(sup, '#toast'));
+  await axe(sup, 'settings (navy desk)');
   // ٨) مساحتي الشخصية: واجهة مركز القيادة داخل ITrack فوق خادم ITrack
   const MY = `http://localhost:${PORT}/Ahmed-Track-/itrack/my/`;
-  const tok = async (p, email) => { const u = await p.evaluate((e) => JSON.parse(localStorage.getItem('fake:users'))[e], email); return (await fetch(`http://localhost:${PORT}/__token?uid=${u.uid}&email=${encodeURIComponent(email)}&v=1`)).text(); };
+  const tok = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('it:session')).token);
   const srv2 = async (p, email, method, url, body) => { const r = await fetch(`http://localhost:${PORT}${url}`, { method, headers: { authorization: 'Bearer ' + await tok(p, email), 'x-org': await p.evaluate(() => JSON.parse(localStorage.getItem('it:org'))), 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return r.json(); };
   const html = fs.readFileSync(path.join(__dirname, '../my/index.html'), 'utf8');
   ok('my/index.html is up to date (node itrack/tools/make-my.mjs)', html === (await import('../tools/make-my.mjs')).build());

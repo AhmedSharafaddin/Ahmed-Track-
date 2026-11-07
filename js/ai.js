@@ -26,7 +26,7 @@ export const AI_MSG = {
   'no-mic': 'هذا المتصفح لا يسمح بتسجيل الصوت.',
   401: 'انتهت جلسة الدخول. أعد فتح التطبيق وحاول مجددًا.',
   429: 'وصلت الحد اليومي للذكاء الاصطناعي (يتجدد كل يوم).',
-  501: 'الذكاء الاصطناعي غير مفعّل على الخادم: أضف ربط Workers AI باسم AI.',
+  501: globalThis.CC_BACKEND ? 'الذكاء الاصطناعي غير مفعّل على خادم الجهة.' : 'الذكاء الاصطناعي غير مفعّل على الخادم: أضف ربط Workers AI باسم AI.',
   net: 'تعذّر الوصول للخادم. تحقق من الاتصال.',
 };
 
@@ -36,7 +36,7 @@ async function call(path, body, raw = false, qs = '') {
   if (!token) throw Object.assign(new Error('signin'), { code: 'signin' });
   let res;
   try {
-    res = await fetch(`${base()}${path}${qs}`, {
+    res = await fetch(`${base()}${globalThis.CC_BACKEND ? '/api/ai' : ''}${path}${qs}`, {
       method: 'POST',
       headers: { 'content-type': raw ? 'text/plain' : 'application/json', authorization: `Bearer ${token}` },
       body: raw ? body : JSON.stringify(body),

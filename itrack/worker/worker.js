@@ -7,11 +7,17 @@
 //   • التوصيف الوظيفي لا يُحذف بنده أبدًا: يُعطَّل (active=0) فتبقى التقارير القديمة مقروءة كما كُتبت.
 //   • SQL قياسي ⇒ يُنقل إلى سيرفر الشركة (SQLite/PostgreSQL) دون إعادة كتابة المنطق.
 //
-// الهوية: رمز دخول Firebase (Authorization: Bearer) يُتحقق من توقيعه محليًا بمفاتيح Google العامة.
+// الهوية: حسابات داخلية (بريد + كلمة مرور، PBKDF2) وجلسات it_… (Authorization: Bearer).
+//   الانضمام لجهة برمز دعوة يصدره المسؤول، ونسيان كلمة المرور برمز إعادة تعيين منه (لا حاجة لخادم بريد).
+//   رموز Firebase القديمة ما زالت مقبولة للتوافق (AUTH_FIREBASE=0 يعطّلها).
 // الجهة: ترويسة X-Org. الأدوار: admin (المدير العام/مسؤول الجهة) · manager · employee.
 // الرؤية: المسؤول يرى الجميع؛ المدير يرى كل من تحته على أي عمق؛ الموظف يرى نفسه.
 //
-// الإعداد: ربط D1 باسم DB. متغيرات اختيارية: FIREBASE_PROJECT_ID (افتراضيًا track-b87ef).
+// الإعداد: ربط D1 باسم DB. متغيرات اختيارية:
+//   SIGNUP=open|invite (open افتراضيًا؛ invite: أول حساب فقط بلا رمز، والباقي بدعوة — مناسب لسيرفر شركة)
+//   ALLOWED_ORIGINS، PBKDF2_ITERS، AUTH_FIREBASE، FIREBASE_PROJECT_ID
+//   الذكاء الاصطناعي: ربط Workers AI باسم AI، أو AI_URL + AI_KEY (أي خدمة متوافقة مع OpenAI، محلية أو سحابية)
+//   مع AI_STT_MODEL و AI_LLM_MODEL اختياريًا.
 
 const PROJECT = 'track-b87ef';
 const JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
@@ -68,11 +74,27 @@ const MIGRATIONS = [
     // أداء: يخدم ترتيب السحب (member, col, updated_at) ومسار التوقيع بلا مسح كامل
     'CREATE INDEX IF NOT EXISTS pdocs_recent ON pdocs(member_id, col, updated_at DESC)',
   ],
+  [
+    // حسابات داخلية: لا اعتماد على Firebase ⇒ يعمل على سيرفر أي شركة، حتى بلا إنترنت.
+    `CREATE TABLE IF NOT EXISTS accounts (uid TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, hash TEXT NOT NULL, salt TEXT NOT NULL,
+      iters INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+    // الجلسة تُحفظ مُجزّأة (SHA-256) ⇒ تسريب القاعدة لا يكشف رموز دخول صالحة
+    `CREATE TABLE IF NOT EXISTS sessions (th TEXT PRIMARY KEY, uid TEXT NOT NULL, created_at INTEGER NOT NULL, seen_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, agent TEXT NOT NULL DEFAULT '')`,
+    'CREATE INDEX IF NOT EXISTS sessions_uid ON sessions(uid, seen_at)',
+    // رموز الدعوة وإعادة تعيين كلمة المرور (تُصدرها الإدارة بدل البريد الإلكتروني)
+    `CREATE TABLE IF NOT EXISTS codes (ch TEXT PRIMARY KEY, kind TEXT NOT NULL, email TEXT NOT NULL, org_id TEXT NOT NULL, member_id TEXT NOT NULL,
+      created_by TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)`,
+    'CREATE INDEX IF NOT EXISTS codes_member ON codes(member_id)',
+    'CREATE TABLE IF NOT EXISTS throttle (k TEXT PRIMARY KEY, n INTEGER NOT NULL, until INTEGER NOT NULL)',
+    'CREATE TABLE IF NOT EXISTS ai_use (k TEXT PRIMARY KEY, n INTEGER NOT NULL)',
+  ],
 ];
 
-let schemaAt = 0;
+const migrated = new WeakSet(); // لكل قاعدة على حدة؛ وعلى Cloudflare ربط واحد فقط فتكفي مرة لكل نسخة
+let migratedD1 = false;
 async function migrate(db) {
-  if (schemaAt === MIGRATIONS.length) return;
+  if (migrated.has(db) || (migratedD1 && db.constructor?.name === 'D1Database')) return;
   await db.prepare('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)').run();
   const row = await db.prepare("SELECT v FROM meta WHERE k = 'schema'").first();
   let v = row ? Number(row.v) : 0;
@@ -81,7 +103,7 @@ async function migrate(db) {
       db.prepare("INSERT INTO meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(String(v + 1))]);
     v++;
   }
-  schemaAt = v;
+  migrated.add(db); migratedD1 = true;
 }
 
 /* ═════════════ أدوات ═════════════ */
@@ -131,8 +153,19 @@ async function googleKey(kid, env) {
   const k = jwks.keys.get(kid);
   return k ? crypto.subtle.importKey('jwk', k, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']) : null;
 }
-async function identity(req, env) {
-  const m = (req.headers.get('authorization') || '').match(/^Bearer ([\w-]+\.[\w-]+\.[\w-]+)$/);
+async function identity(req, env, db) {
+  const auth = req.headers.get('authorization') || '';
+  const sm = auth.match(/^Bearer (it_[\w-]{20,80})$/);
+  if (sm) {
+    const th = await sha(sm[1]); const t = now();
+    const r = await db.prepare('SELECT s.uid, s.seen_at, a.email FROM sessions s JOIN accounts a ON a.uid = s.uid WHERE s.th = ? AND s.expires_at > ? AND a.disabled = 0').bind(th, t).first();
+    if (!r) return null;
+    // تمديد الجلسة مرة يوميًا على الأكثر (لا كتابة مع كل طلب)
+    if (t - r.seen_at > 864e5) await db.prepare('UPDATE sessions SET seen_at = ?, expires_at = ? WHERE th = ?').bind(t, t + SESSION_DAYS * 864e5, th).run();
+    return { uid: r.uid, email: r.email, verified: true, local: true, th };
+  }
+  if (env.AUTH_FIREBASE === '0') return null;
+  const m = auth.match(/^Bearer ([\w-]+\.[\w-]+\.[\w-]+)$/);
   if (!m) return null;
   const [h, p, s] = m[1].split('.');
   try {
@@ -148,13 +181,58 @@ async function identity(req, env) {
   } catch { return null; }
 }
 
+/* ═════════════ الحسابات الداخلية ═════════════ */
+const SESSION_DAYS = 30;
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+const b64e = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const sha = async (str) => hex(await crypto.subtle.digest('SHA-256', enc.encode(str)));
+const itersOf = (env) => Math.min(Math.max(Number(env.PBKDF2_ITERS) || 100_000, 10_000), 1_000_000); // Cloudflare يقبل حتى ١٠٠ ألف
+async function pbkdf2(pass, saltHex, iters) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveBits']);
+  const salt = Uint8Array.from(saltHex.match(/../g), (h) => parseInt(h, 16));
+  return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iters }, key, 256));
+}
+const same = (a, b) => { if (a.length !== b.length) return false; let x = 0; for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i); return x === 0; };
+async function hashPass(env, pass) { const salt = hex(rand(16)); const iters = itersOf(env); return { salt, iters, hash: await pbkdf2(pass, salt, iters) }; }
+const checkPass = (pass) => {
+  if (typeof pass !== 'string' || pass.length < 8) fail(400, 'weak-password', 'كلمة المرور ٨ أحرف على الأقل.');
+  if (pass.length > 200) fail(400, 'invalid', 'كلمة المرور طويلة جدًا.');
+  return pass;
+};
+const ipOf = (req) => req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || 'local';
+/** حد المحاولات: يرفض إن تجاوز المفتاح max خلال النافذة. */
+async function throttle(db, key, max, windowMs) {
+  const r = await db.prepare('SELECT n, until FROM throttle WHERE k = ?').bind(key).first();
+  if (r && r.until > now() && r.n >= max) fail(429, 'too-many', 'محاولات كثيرة. انتظر قليلًا ثم أعد المحاولة.');
+}
+const bump = (db, key, windowMs) => { const t = now(); return db.prepare(`INSERT INTO throttle (k, n, until) VALUES (?1, 1, ?2)
+  ON CONFLICT(k) DO UPDATE SET n = CASE WHEN until < ?3 THEN 1 ELSE n + 1 END, until = CASE WHEN until < ?3 THEN ?2 ELSE until END`).bind(key, t + windowMs, t).run(); };
+async function newSession(db, uid, req) {
+  const tok = 'it_' + b64e(rand(32)); const t = now();
+  await db.batch([
+    db.prepare('INSERT INTO sessions (th, uid, created_at, seen_at, expires_at, agent) VALUES (?, ?, ?, ?, ?, ?)').bind(await sha(tok), uid, t, t, t + SESSION_DAYS * 864e5, (req.headers.get('user-agent') || '').slice(0, 160)),
+    // حتى ٢٠ جهازًا للحساب، والجلسات المنتهية تُحذف
+    db.prepare('DELETE FROM sessions WHERE uid = ?1 AND th NOT IN (SELECT th FROM sessions WHERE uid = ?1 ORDER BY seen_at DESC LIMIT 20)').bind(uid),
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(t),
+  ]);
+  return tok;
+}
+const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // بلا 0/O و1/I لتجنّب الخلط عند الإملاء
+const newCode = () => [...rand(12)].map((b) => CODE_ABC[b & 31]).join('').replace(/(.{4})(?=.)/g, '$1-');
+const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 24);
+const account = (db, email) => db.prepare('SELECT * FROM accounts WHERE email = ?').bind(email).first();
+const authOut = async (db, acc, req) => ({ token: await newSession(db, acc.uid, req), user: { uid: acc.uid, email: acc.email } });
+
 /* ═════════════ سياق الطلب: من أنا داخل هذه الجهة ═════════════ */
 async function viewer(db, user, orgId) {
   if (!orgId) fail(400, 'no-org', 'لم تُحدَّد الجهة.');
   let me = await db.prepare('SELECT * FROM members WHERE org_id = ? AND (uid = ? OR (uid IS NULL AND email = ?))').bind(orgId, user.uid, user.email).first();
   if (!me || me.status === 'disabled') fail(403, 'not-member', 'لست عضوًا في هذه الجهة.');
   if (!me.uid) {
-    // أول دخول بعد الدعوة: نربط الحساب فقط إن ثبتت ملكية البريد
+    // أول دخول بعد الدعوة: الحساب الداخلي يُربط برمز الدعوة فقط (لا يكفي تطابق البريد)،
+    // وحساب Firebase القديم يُربط إن كان بريده مؤكَّدًا.
+    if (user.local) fail(403, 'need-code', 'أدخل رمز الدعوة الذي أرسله لك مسؤول الجهة.');
     if (!user.verified) fail(403, 'verify-email', 'أكّد بريدك الإلكتروني أولًا.');
     const t = now();
     await db.batch([
@@ -193,9 +271,81 @@ const pubItem = (i) => ({ id: i.id, text: i.text, responsibility_id: i.responsib
 
 /* ═════════════ المسارات ═════════════ */
 const routes = [];
-const route = (method, pattern, fn) => routes.push({ method, re: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn });
+const route = (method, pattern, fn, opt = {}) => routes.push({ method, re: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn, ...opt });
 
-route('GET', '/api/health', async () => ({ ok: true, app: 'itrack', schema: MIGRATIONS.length }));
+route('GET', '/api/health', async ({ env }) => ({ ok: true, app: 'itrack', schema: MIGRATIONS.length, auth: 'local', signup: env.SIGNUP === 'invite' ? 'invite' : 'open', ai: aiProvider(env) }));
+
+/* ───── الدخول ───── */
+route('POST', '/api/auth/signup', async ({ db, env, req, body }) => {
+  const email = low(body.email);
+  if (!isEmail(email)) fail(400, 'invalid', 'البريد غير صحيح.');
+  const pass = checkPass(body.password);
+  await throttle(db, 'signup:' + ipOf(req), 20, 3600_000);
+  await bump(db, 'signup:' + ipOf(req), 3600_000);
+  if (env.SIGNUP === 'invite' && (await db.prepare('SELECT 1 FROM accounts LIMIT 1').first())) fail(403, 'invite-only', 'التسجيل على هذا الخادم بدعوة فقط: استخدم «عندي رمز».');
+  if (await account(db, email)) fail(409, 'exists', 'لهذا البريد حساب بالفعل. اختر «دخول».');
+  const h = await hashPass(env, pass); const t = now();
+  const acc = { uid: 'u_' + id(), email };
+  await db.prepare('INSERT INTO accounts (uid, email, hash, salt, iters, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(acc.uid, email, h.hash, h.salt, h.iters, t, t).run();
+  return authOut(db, acc, req);
+});
+route('POST', '/api/auth/login', async ({ db, env, req, body }) => {
+  const email = low(body.email);
+  const key = 'login:' + email;
+  await throttle(db, key, 10, 15 * 60_000);
+  const acc = isEmail(email) && typeof body.password === 'string' ? await account(db, email) : null;
+  if (!acc || acc.disabled || !same(await pbkdf2(body.password, acc.salt, acc.iters), acc.hash)) {
+    await bump(db, key, 15 * 60_000);
+    fail(401, 'bad-login', 'البريد أو كلمة المرور غير صحيحة.');
+  }
+  await db.prepare('DELETE FROM throttle WHERE k = ?').bind(key).run();
+  if (acc.iters < itersOf(env)) { const h = await hashPass(env, body.password); await db.prepare('UPDATE accounts SET hash = ?, salt = ?, iters = ?, updated_at = ? WHERE uid = ?').bind(h.hash, h.salt, h.iters, now(), acc.uid).run(); }
+  return authOut(db, acc, req);
+});
+/** رمز من المسؤول: دعوة (انضمام للجهة، وينشئ الحساب إن لم يوجد) أو إعادة تعيين كلمة المرور. */
+route('POST', '/api/auth/code', async ({ db, env, req, body }) => {
+  const email = low(body.email);
+  const code = normCode(body.code);
+  await throttle(db, 'code:' + ipOf(req), 20, 3600_000);
+  const t = now();
+  const c = isEmail(email) && code.length === 12 ? await db.prepare('SELECT * FROM codes WHERE ch = ? AND email = ? AND used_at IS NULL AND expires_at > ?').bind(await sha(code), email, t).first() : null;
+  if (!c) { await bump(db, 'code:' + ipOf(req), 3600_000); fail(400, 'bad-code', 'الرمز غير صحيح أو منتهٍ، أو البريد لا يطابقه. اطلب رمزًا جديدًا من المسؤول.'); }
+  let acc = await account(db, email);
+  const stmts = [db.prepare('UPDATE codes SET used_at = ? WHERE ch = ?').bind(t, c.ch)];
+  if (acc && c.kind === 'invite' && body.password !== undefined && !acc.disabled && !same(await pbkdf2(String(body.password), acc.salt, acc.iters), acc.hash)) {
+    fail(401, 'bad-login', 'لهذا البريد حساب: اكتب كلمة مروره الحالية، أو اطلب من المسؤول رمز إعادة تعيين.');
+  }
+  if (!acc) {
+    const h = await hashPass(env, checkPass(body.password));
+    acc = { uid: 'u_' + id(), email };
+    stmts.push(db.prepare('INSERT INTO accounts (uid, email, hash, salt, iters, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(acc.uid, email, h.hash, h.salt, h.iters, t, t));
+  } else if (c.kind === 'reset') {
+    const h = await hashPass(env, checkPass(body.password));
+    stmts.push(db.prepare('UPDATE accounts SET hash = ?, salt = ?, iters = ?, disabled = 0, updated_at = ? WHERE uid = ?').bind(h.hash, h.salt, h.iters, t, acc.uid));
+    stmts.push(db.prepare('DELETE FROM sessions WHERE uid = ?').bind(acc.uid));
+  }
+  if (c.kind === 'invite') {
+    stmts.push(db.prepare("UPDATE members SET uid = ?, status = 'active', updated_at = ? WHERE id = ? AND org_id = ? AND uid IS NULL AND status != 'disabled'").bind(acc.uid, t, c.member_id, c.org_id));
+    stmts.push(auditQ(db, c.org_id, c.member_id, 'member.join', 'member', c.member_id, c.member_id, { email }));
+  } else stmts.push(auditQ(db, c.org_id, c.member_id, 'member.password', 'member', c.member_id, c.member_id, { by: c.created_by }));
+  await db.batch(stmts);
+  return { ...(await authOut(db, acc, req)), org: c.org_id, kind: c.kind };
+});
+route('POST', '/api/auth/logout', async ({ db, user }) => {
+  if (user.th) await db.prepare('DELETE FROM sessions WHERE th = ?').bind(user.th).run();
+  return { ok: true };
+});
+route('POST', '/api/auth/password', async ({ db, env, user, body }) => {
+  if (!user.local) fail(400, 'invalid', 'هذا الحساب يُدار من مزوّد دخول خارجي.');
+  const acc = await db.prepare('SELECT * FROM accounts WHERE uid = ?').bind(user.uid).first();
+  if (!acc || !same(await pbkdf2(String(body.old || ''), acc.salt, acc.iters), acc.hash)) fail(401, 'bad-login', 'كلمة المرور الحالية غير صحيحة.');
+  const h = await hashPass(env, checkPass(body.password));
+  await db.batch([
+    db.prepare('UPDATE accounts SET hash = ?, salt = ?, iters = ?, updated_at = ? WHERE uid = ?').bind(h.hash, h.salt, h.iters, now(), acc.uid),
+    db.prepare('DELETE FROM sessions WHERE uid = ? AND th != ?').bind(acc.uid, user.th), // الخروج من الأجهزة الأخرى
+  ]);
+  return { ok: true };
+});
 
 /** حسابي والجهات التي أنتمي إليها (أو دُعيت إليها). */
 route('GET', '/api/me', async ({ db, user }) => {
@@ -205,8 +355,14 @@ route('GET', '/api/me', async ({ db, user }) => {
 });
 
 /** إنشاء جهة جديدة: المنشئ يصبح مسؤولها. */
-route('POST', '/api/orgs', async ({ db, user, body }) => {
+route('POST', '/api/orgs', async ({ db, env, user, body }) => {
   if (!user.verified) fail(403, 'verify-email', 'أكّد بريدك الإلكتروني أولًا.');
+  if (env.SIGNUP === 'invite') {
+    // سيرفر شركة: الجهة الأولى ينشئها أول حساب، وبعدها مسؤولو الجهات فقط
+    const any = await db.prepare('SELECT 1 FROM orgs LIMIT 1').first();
+    const adm = any && await db.prepare("SELECT 1 FROM members WHERE uid = ? AND role = 'admin' AND status = 'active' LIMIT 1").bind(user.uid).first();
+    if (any && !adm) fail(403, 'forbidden', 'إنشاء الجهات على هذا الخادم لمسؤوليه فقط.');
+  }
   const name = text(body.name, 80, { required: true, label: 'اسم الجهة' });
   const myName = text(body.my_name, 60, { required: true, label: 'اسمك' });
   const own = await db.prepare("SELECT COUNT(*) AS n FROM orgs WHERE created_by = ?").bind(user.uid).first();
@@ -348,7 +504,32 @@ route('POST', '/api/members', async ({ db, v, body }) => {
       .bind(mid, v.org_id, email, f.name, f.role, f.department_id, f.position_id, f.manager_id, t, t),
     auditQ(db, v.org_id, v.id, 'member.invite', 'member', mid, mid, { email, ...f }),
   ]);
-  return { id: mid };
+  return { id: mid, ...(await issueCode(db, v, { id: mid, email, uid: null, status: 'invited' })) };
+});
+/** رمز دعوة (لمن لم ينضم) أو رمز إعادة تعيين كلمة المرور (لمن انضم). يُعرض مرة واحدة ويُحفظ مجزّأً. */
+async function issueCode(db, v, m) {
+  if (m.status === 'disabled') fail(400, 'invalid', 'الحساب معطّل.');
+  const kind = m.uid ? 'reset' : 'invite';
+  if (kind === 'reset') {
+    if (!m.uid.startsWith('u_')) fail(400, 'invalid', 'هذا العضو يدخل بحساب خارجي قديم.');
+    // لا يعيد مسؤول جهة كلمة مرور حساب ينتمي لجهات أخرى (حماية بين الجهات على نفس الخادم)
+    const other = await db.prepare("SELECT 1 FROM members WHERE uid = ? AND org_id != ? AND status != 'disabled' LIMIT 1").bind(m.uid, v.org_id).first();
+    if (other) fail(403, 'multi-org', 'هذا الحساب عضو في جهات أخرى؛ لا تُعاد كلمة مروره من هنا.');
+  }
+  const code = newCode(); const t = now();
+  const expires_at = t + (kind === 'invite' ? 14 : 1) * 864e5;
+  await db.batch([
+    db.prepare('DELETE FROM codes WHERE member_id = ? AND used_at IS NULL').bind(m.id),
+    db.prepare('INSERT INTO codes (ch, kind, email, org_id, member_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(await sha(normCode(code)), kind, m.email, v.org_id, m.id, v.id, t, expires_at),
+    auditQ(db, v.org_id, v.id, kind === 'invite' ? 'member.code' : 'member.reset', 'member', m.id, m.id, {}),
+  ]);
+  return { code, kind, expires_at };
+}
+route('POST', '/api/members/:id/code', async ({ db, v, p }) => {
+  needAdmin(v);
+  const m = await db.prepare('SELECT * FROM members WHERE id = ? AND org_id = ?').bind(p.id, v.org_id).first();
+  if (!m) fail(404, 'not-found', 'العضو غير موجود.');
+  return issueCode(db, v, m);
 });
 route('PATCH', '/api/members/:id', async ({ db, v, body, p }) => {
   needAdmin(v);
@@ -592,8 +773,174 @@ route('GET', '/api/audit', async ({ db, v, q }) => {
 });
 
 /* ═════════════ التشغيل ═════════════ */
-const OPEN = new Set(['/api/health']);
-const NO_ORG = new Set(['/api/me', '/api/orgs']);
+/* ═════════════ الذكاء الاصطناعي: إدخال صوتي ومحضر اجتماع ═════════════
+   مزوّدان بنفس الواجهة: Workers AI (ربط AI على Cloudflare، مجاني ضمن حصة يومية) أو أي خدمة متوافقة مع OpenAI
+   عبر AI_URL (سحابية مثل OpenAI/Groq، أو محلية على سيرفر الشركة مثل whisper.cpp + Ollama ⇒ لا يخرج الصوت من الشركة).
+   لا يُحفظ أي صوت أو نص على الخادم؛ يُعالج ويُعاد فورًا. حدود يومية لكل مستخدم. */
+const STT = '@cf/openai/whisper-large-v3-turbo';
+const LLM = '@cf/meta/llama-4-scout-17b-16e-instruct';
+const DAY_LIMITS = { transcribe: 150, parse: 120, minutes: 20 };
+const MAX_AUDIO_B64 = 6_200_000; // ≈ ٣ دقائق WAV 16kHz — التطبيق يقسّم التسجيل الطويل إلى مقاطع
+function aiProvider(env) { return env.AI ? 'workers-ai' : env.AI_URL ? 'openai' : null; }
+const aiBase = (env) => String(env.AI_URL).replace(/\/$/, '');
+const aiHead = (env) => (env.AI_KEY ? { authorization: `Bearer ${env.AI_KEY}` } : {});
+
+async function quota(db, uid, kind) {
+  const day = dayOf(now());
+  const r = await db.prepare('INSERT INTO ai_use (k, n) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1 RETURNING n').bind(`${day}:${kind}:${uid}`).first();
+  if (Math.random() < 0.02) await db.prepare('DELETE FROM ai_use WHERE k < ?').bind(addDays(day, -3)).run();
+  if ((r?.n || 0) > DAY_LIMITS[kind]) fail(429, 'ai-limit', 'وصلت الحد اليومي للذكاء الاصطناعي (يتجدد كل يوم).');
+}
+function pickJson(r) {
+  const raw = r?.response ?? r?.result?.response ?? r;
+  if (raw && typeof raw === 'object') return raw;
+  const t = String(raw || '');
+  const a = t.indexOf('{'); const b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(t.slice(a, b + 1)); } catch { return null; }
+}
+async function llmJson(env, system, user, schema, maxTokens) {
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+  if (env.AI) {
+    try {
+      const r = await env.AI.run(LLM, { messages, max_tokens: maxTokens, temperature: 0.1, response_format: { type: 'json_schema', json_schema: schema } });
+      const j = pickJson(r); if (j) return j;
+    } catch {}
+    return pickJson(await env.AI.run(LLM, { messages, max_tokens: maxTokens, temperature: 0.1 }));
+  }
+  const r = await fetch(aiBase(env) + '/chat/completions', {
+    method: 'POST', headers: { 'content-type': 'application/json', ...aiHead(env) },
+    body: JSON.stringify({ model: env.AI_LLM_MODEL || 'gpt-4o-mini', messages, temperature: 0.1, max_tokens: maxTokens, response_format: { type: 'json_object' } }),
+  });
+  if (!r.ok) fail(502, 'ai-failed', 'تعذّر الوصول لخدمة الذكاء الاصطناعي.');
+  return pickJson((await r.json())?.choices?.[0]?.message?.content);
+}
+async function transcribeAudio(env, audio, hint) {
+  if (env.AI) {
+    const r = await env.AI.run(STT, { audio, language: 'ar', vad_filter: true, condition_on_previous_text: false, ...(hint ? { initial_prompt: hint } : {}) });
+    return tcut(r?.text, 20000);
+  }
+  const bin = Uint8Array.from(atob(audio), (c) => c.charCodeAt(0));
+  const fd = new FormData();
+  fd.append('file', new Blob([bin], { type: 'audio/wav' }), 'audio.wav');
+  fd.append('model', env.AI_STT_MODEL || 'whisper-1'); fd.append('language', 'ar'); fd.append('response_format', 'json');
+  if (hint) fd.append('prompt', hint);
+  const r = await fetch(aiBase(env) + '/audio/transcriptions', { method: 'POST', headers: aiHead(env), body: fd });
+  if (!r.ok) fail(502, 'ai-failed', 'تعذّر تفريغ الصوت.');
+  return tcut((await r.json())?.text, 20000);
+}
+const S_STR = { type: 'string' };
+const PARSE_SCHEMA = {
+  type: 'object', required: ['items'],
+  properties: { items: { type: 'array', items: { type: 'object', required: ['kind', 'title'], properties: {
+    kind: { type: 'string', enum: ['task', 'meeting'] }, title: S_STR, due: S_STR, time: S_STR, duration: { type: 'number' },
+    place: S_STR, area: S_STR, assignee: S_STR, important: { type: 'boolean' }, urgent: { type: 'boolean' } } } } },
+};
+const MINUTES_SCHEMA = {
+  type: 'object', required: ['summary', 'decisions', 'actions'],
+  properties: {
+    summary: S_STR, attendees: { type: 'array', items: S_STR }, decisions: { type: 'array', items: S_STR },
+    actions: { type: 'array', items: { type: 'object', required: ['title'], properties: { title: S_STR, owner: S_STR, due: S_STR } } },
+    dates: { type: 'array', items: { type: 'object', properties: { what: S_STR, date: S_STR } } },
+  },
+};
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const tcut = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+
+function cleanParsed(j, areas) {
+  const items = Array.isArray(j?.items) ? j.items.slice(0, 12) : [];
+  return items.map((it) => ({
+    kind: it.kind === 'meeting' ? 'meeting' : 'task',
+    title: tcut(it.title, 200),
+    due: DATE.test(it.due || '') ? it.due : null,
+    time: TIME.test(it.time || '') ? it.time : null,
+    duration: Number.isFinite(it.duration) && it.duration > 0 && it.duration <= 600 ? Math.round(it.duration) : null,
+    place: tcut(it.place, 120) || null,
+    area: areas.includes(it.area) ? it.area : null,
+    assignee: tcut(it.assignee, 40) || null,
+    important: !!it.important, urgent: !!it.urgent,
+  })).filter((it) => it.title);
+}
+
+function cleanMinutes(j) {
+  const arr = (a, n) => (Array.isArray(a) ? a : []).slice(0, n);
+  return {
+    summary: tcut(j?.summary, 2000),
+    attendees: arr(j?.attendees, 30).map((x) => tcut(x, 60)).filter(Boolean),
+    decisions: arr(j?.decisions, 30).map((x) => tcut(x, 400)).filter(Boolean),
+    actions: arr(j?.actions, 40).map((a) => ({ title: tcut(a?.title, 200), owner: tcut(a?.owner, 40) || null, due: DATE.test(a?.due || '') ? a.due : null })).filter((a) => a.title),
+    dates: arr(j?.dates, 20).map((d) => ({ what: tcut(d?.what, 200), date: DATE.test(d?.date || '') ? d.date : null })).filter((d) => d.what),
+  };
+}
+
+const PARSE_RULES = (today, weekday, areas, people) => `أنت تحوّل ملاحظة صوتية عربية (قد تكون بلهجة يمنية أو سعودية أو خليجية، وقد يحوي التفريغ أخطاء سمع) إلى عناصر منظمة لتطبيق مهام. أعد JSON فقط بالشكل {"items":[...]}.
+اليوم ${today}${weekday ? ` (${weekday})` : ''}. الأسبوع يبدأ السبت.
+- kind: "meeting" إن ذُكر اجتماع أو لقاء أو موعد مع أشخاص، وإلا "task".
+- title: عنوان قصير بفصحى بسيطة يبدأ بفعل للمهمة، أو «اجتماع مع ...» للاجتماع. احذف من العنوان عبارات الوقت والتاريخ («الساعة ١٠ مساءً»، «بكرة») لأنها تذهب لحقليها. لا تخترع تفاصيل لم تُذكر.
+- due: تاريخ YYYY-MM-DD إن ذُكر يوم أو تاريخ (بكرة/غدًا، بعد بكرة، الأحد، الأسبوع الجاي = السبت القادم...). إن ذُكر وقت بلا يوم فاجعل due = اليوم (${today}).
+- time: HH:MM بنظام ٢٤ ساعة. افهم الأوقات هكذا بدقة:
+  «الساعة عشرة مساءً/بالليل» = 22:00، «عشرة الصبح» = 10:00، «ثلاثة العصر» = 15:00، «ثمانية المغرب» = 20:00، «اثنا عشر الظهر» = 12:00، «اثنا عشر ليلًا» = 00:00،
+  «ونص» = :30، «وربع» = :15، «إلا ربع» = ناقص ١٥ دقيقة (مثلًا «تسعة إلا ربع صباحًا» = 08:45)، «وثلث» = :20، «إلا ثلث» = ناقص ٢٠ دقيقة.
+  إن لم يُذكر صباح أو مساء فاختر الأرجح لوقت العمل (الساعات ١–٦ بعد الظهر، ٧–١١ صباحًا).
+- duration بالدقائق للاجتماع إن ذُكرت. place للمكان إن ذُكر.
+- area: واحدة من هذه بالضبط إن كان واضحًا: ${areas.join('، ') || '(لا يوجد)'}. وإلا فارغ.
+- assignee: اسم الشخص المكلّف إن قال «خلي فلان» أو «كلّف فلان». أشخاص معروفون (صحّح تهجئة الاسم إلى ما يطابقهم): ${people.join('، ') || '(لا يوجد)'}.
+- important للمهم، urgent للعاجل أو «ضروري اليوم».
+- ملاحظة واحدة قد تحوي عدة عناصر: افصلها.`;
+
+async function parseText(env, text, today, weekday, areas, people) {
+  const j = await llmJson(env, PARSE_RULES(today, weekday, areas, people), text, { name: 'items', schema: PARSE_SCHEMA }, 700);
+  return cleanParsed(j, areas);
+}
+const MINUTES_RULES = (today, title, people) => `أنت أمين سر محترف تكتب محضر اجتماع عمل بالعربية الفصحى المختصرة من تفريغ صوتي قد يكون بلهجة يمنية ويحوي أخطاء تفريغ. أعد JSON فقط.
+اليوم ${today}. ${title ? `موضوع الاجتماع: ${title}.` : ''}
+- summary: ملخص من ٢ إلى ٤ جمل.
+- attendees: أسماء من ذُكروا أو تحدثوا فقط. لا تخترع أسماء.
+- decisions: القرارات المتفق عليها، كل قرار جملة واحدة.
+- actions: المطلوب تنفيذه: title يبدأ بفعل، owner اسم المسؤول إن ذُكر (أشخاص معروفون: ${people.join('، ') || '-'})، due بصيغة YYYY-MM-DD إن ذُكر موعد.
+- dates: المواعيد القادمة المذكورة (اجتماع لاحق، تسليم...).
+- إن لم يُذكر شيء في بند فاتركه مصفوفة فارغة. لا تضف ما لم يُقل.`;
+const okAudio = (audio) => audio && audio.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(audio.slice(0, 200));
+const needAi = (env) => { if (!aiProvider(env)) fail(501, 'no-ai', 'الذكاء الاصطناعي غير مفعّل على هذا الخادم.'); };
+const ctxList = (a, n) => (Array.isArray(a) ? a : []).map((x) => tcut(x, 40)).filter(Boolean).slice(0, n);
+function aiCtx(src) {
+  return { today: DATE.test(src.today || '') ? src.today : dayOf(now()), weekday: tcut(src.weekday, 20), areas: ctxList(src.areas, 20), people: ctxList(src.people, 40) };
+}
+
+route('POST', '/api/ai/voice', async ({ db, env, user, raw, q }) => {
+  needAi(env);
+  await quota(db, user.uid, 'transcribe'); await quota(db, user.uid, 'parse');
+  if (!okAudio(raw)) fail(400, 'invalid', 'التسجيل غير صالح.');
+  let c = {}; try { c = JSON.parse(q.get('ctx') || '{}'); } catch {}
+  const x = aiCtx(c);
+  const t = await transcribeAudio(env, raw, tcut(q.get('hint') || '', 400));
+  if (!t) return { text: '', items: [] };
+  return { text: t, items: await parseText(env, t, x.today, x.weekday, x.areas, x.people) };
+}, { raw: MAX_AUDIO_B64, noOrg: true });
+route('POST', '/api/ai/transcribe', async ({ db, env, user, raw, q }) => {
+  needAi(env); await quota(db, user.uid, 'transcribe');
+  if (!okAudio(raw)) fail(400, 'invalid', 'التسجيل غير صالح.');
+  return { text: await transcribeAudio(env, raw, tcut(q.get('hint') || '', 400)) };
+}, { raw: MAX_AUDIO_B64, noOrg: true });
+route('POST', '/api/ai/parse', async ({ db, env, user, body }) => {
+  needAi(env); await quota(db, user.uid, 'parse');
+  const t = tcut(body.text, 4000); if (!t) return { items: [] };
+  const x = aiCtx(body);
+  return { items: await parseText(env, t, x.today, x.weekday, x.areas, x.people) };
+}, { noOrg: true });
+route('POST', '/api/ai/minutes', async ({ db, env, user, body }) => {
+  needAi(env); await quota(db, user.uid, 'minutes');
+  const t = tcut(body.text, 60000); const title = tcut(body.title, 200);
+  if (t.length < 20) fail(400, 'invalid', 'النص قصير جدًا.');
+  const x = aiCtx(body);
+  const j = await llmJson(env, MINUTES_RULES(x.today, title, x.people), t, { name: 'minutes', schema: MINUTES_SCHEMA }, 2500);
+  if (!j) fail(502, 'ai-failed', 'لم يُرجع النموذج محضرًا صالحًا.');
+  return cleanMinutes(j);
+}, { noOrg: true });
+
+const OPEN = new Set(['/api/health', '/api/auth/signup', '/api/auth/login', '/api/auth/code']);
+const NO_ORG = new Set(['/api/me', '/api/orgs', '/api/auth/logout', '/api/auth/password']);
 
 export default {
   async fetch(req, env) { return withCors(await handle(req, env), req, env); },
@@ -608,13 +955,17 @@ async function handle(req, env) {
     const db = env.DB;
     if (!db) fail(500, 'no-db', 'قاعدة البيانات غير مربوطة (DB).');
     await migrate(db);
-    const ctx = { db, env, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
+    const ctx = { db, env, req, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
     if (!OPEN.has(url.pathname)) {
-      ctx.user = await identity(req, env);
+      ctx.user = await identity(req, env, db);
       if (!ctx.user) fail(401, 'auth', 'سجّل الدخول من جديد.');
-      if (!NO_ORG.has(url.pathname)) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
+      if (!NO_ORG.has(url.pathname) && !r.noOrg) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
     }
-    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    if (r.raw) {
+      // الصوت: نص base64 خام حتى ~٦ ميغابايت، يُمرَّر دون تحليل JSON
+      ctx.raw = await req.text();
+      if (ctx.raw.length > r.raw) fail(413, 'too-big', 'التسجيل أطول من المسموح.');
+    } else if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
       const raw = await req.text();
       if (raw.length > MAX_BODY) fail(413, 'too-big', 'الطلب أكبر من المسموح.');
       try { ctx.body = raw ? JSON.parse(raw) : {}; } catch { fail(400, 'invalid', 'صيغة الطلب غير صحيحة.'); }
