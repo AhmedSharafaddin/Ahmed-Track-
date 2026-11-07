@@ -312,7 +312,13 @@ class ItrackAdapter {
     if (this.pulling || this.wq.length || this.sending.length) return;
     this.pulling = true;
     try {
+      // توقيع خفيف أولًا: إن لم يتغير شيء نتجنب سحب كل الوثائق (مئات الكيلوبايت)
+      let sig = null;
+      try { sig = (await this._api('GET', '/api/p-sig')).sig; } catch { /* خادم أقدم: سحب كامل */ }
+      const key = sig && COLLS.map((c) => sig[c]).join('|');
+      if (key && this.confirmed && key === this.lastSig) { this.error = null; this._emit(false); return; }
       const res = await Promise.all(COLLS.map((c) => this._api('GET', `/api/p/${c}`)));
+      this.lastSig = key || null;
       let changed = !this.confirmed;
       COLLS.forEach((c, i) => {
         const next = new Map(res[i].docs.map(({ updated_at, ...d }) => [d.id, d]));

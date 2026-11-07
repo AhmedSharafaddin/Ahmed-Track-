@@ -64,6 +64,10 @@ const MIGRATIONS = [
       shared INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (member_id, col, id))`,
     'CREATE INDEX IF NOT EXISTS pdocs_shared ON pdocs(shared, member_id)',
   ],
+  [
+    // أداء: يخدم ترتيب السحب (member, col, updated_at) ومسار التوقيع بلا مسح كامل
+    'CREATE INDEX IF NOT EXISTS pdocs_recent ON pdocs(member_id, col, updated_at DESC)',
+  ],
 ];
 
 let schemaAt = 0;
@@ -526,6 +530,14 @@ const PCOLS = new Set(['areas', 'goals', 'tasks', 'reviews']);
 const MAX_OPS = 40; // حد D1 المجاني ٥٠ استعلامًا لكل طلب
 const MAX_DOC = 8000;
 const PID = /^[\w.-]{1,64}$/;
+
+/** توقيع خفيف (عدد + آخر تعديل لكل مجموعة) كي لا يسحب العميل كل الوثائق إن لم يتغير شيء. */
+route('GET', '/api/p-sig', async ({ db, v }) => {
+  const { results } = await db.prepare('SELECT col, COUNT(*) AS n, MAX(updated_at) AS m FROM pdocs WHERE member_id = ? GROUP BY col').bind(v.id).all();
+  const sig = {}; for (const c of PCOLS) sig[c] = '0:0';
+  for (const r of results) if (PCOLS.has(r.col)) sig[r.col] = `${r.n}:${r.m}`;
+  return { sig };
+});
 
 route('GET', '/api/p/:col', async ({ db, v, p }) => {
   if (!PCOLS.has(p.col)) fail(404, 'not-found', 'المجموعة غير معروفة.');

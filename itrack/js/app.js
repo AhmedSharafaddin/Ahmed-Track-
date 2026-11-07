@@ -78,8 +78,11 @@ function route() {
   return { name, a, b };
 }
 function home() { return hasTeam() ? '#/team' : '#/day'; }
-window.addEventListener('hashchange', () => { drop('inbox'); render(); window.scrollTo(0, 0); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.boot) { drop('inbox', 'day|'); render(); } });
+// الصندوق يُحدَّث عند العودة للتبويب أو بعد ٣٠ ثانية، لا عند كل تنقّل (يوفّر ٦ استعلامات لكل شاشة)
+let inboxAt = 0;
+const freshInbox = () => { if (Date.now() - inboxAt > 30000) { drop('inbox'); inboxAt = Date.now(); } };
+window.addEventListener('hashchange', () => { freshInbox(); render(); window.scrollTo(0, 0); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.boot) { drop('inbox', 'day|'); inboxAt = Date.now(); render(); } });
 
 /* ═════════════ الرسم ═════════════ */
 let painting = false;

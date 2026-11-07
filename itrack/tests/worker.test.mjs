@@ -166,6 +166,11 @@ r = await P(U.emp, [
 ok('personal: save docs', r.status === 200 && r.data.n === 3, r);
 r = await call(U.emp, 'GET', '/api/p/tasks');
 ok('personal: owner reads own tasks', r.data.docs.length === 2 && r.data.docs.find((d) => d.id === 't1').title === 'مهمة خاصة', r.data);
+r = await call(U.emp, 'GET', '/api/p-sig');
+const sig1 = r.data.sig.tasks;
+ok('personal: sig reflects count', r.status === 200 && sig1.startsWith('2:') && r.data.sig.goals === '0:0', r.data);
+ok('personal: sig stable without writes', (await call(U.emp, 'GET', '/api/p-sig')).data.sig.tasks === sig1);
+ok('personal: sig is per-member', (await call(U.emp2, 'GET', '/api/p-sig')).data.sig.tasks === '0:0');
 ok('personal: other employee sees none', (await call(U.emp2, 'GET', '/api/p/tasks')).data.docs.length === 0);
 ok('personal: manager reading /p sees only his own (empty)', (await call(U.sup, 'GET', '/api/p/tasks')).data.docs.length === 0);
 r = await call(U.sup, 'GET', `/api/team/tasks?member=${mEmp}`);
