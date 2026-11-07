@@ -59,6 +59,9 @@ function need(key, loader) {
 }
 const drop = (...prefixes) => { for (const k of [...S.cache.keys()]) if (prefixes.some((p) => k.startsWith(p))) S.cache.delete(k); };
 const call = (m, p, b) => api(m, p, b, S.org);
+/** ما ينتظرني: تقارير لأراجعها، وتقاريري المُعادة للتعديل. يُحدَّث عند كل تنقّل. */
+const inbox = () => (S.boot ? need('inbox', () => call('GET', `/api/inbox?today=${today()}`)) : undefined);
+const reviewCount = () => { const x = S.cache.get('inbox'); return x && !x.error ? x.review.length : 0; };
 
 const members = () => S.boot?.members || [];
 const memberById = (id) => members().find((m) => m.id === id);
@@ -75,7 +78,8 @@ function route() {
   return { name, a, b };
 }
 function home() { return hasTeam() ? '#/team' : '#/day'; }
-window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { drop('inbox'); render(); window.scrollTo(0, 0); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.boot) { drop('inbox', 'day|'); render(); } });
 
 /* ═════════════ الرسم ═════════════ */
 let painting = false;
@@ -113,7 +117,9 @@ function paintNav() {
     ['settings', '#/settings', 'gear', 'الإعدادات'],
   ].filter(Boolean);
   const cur = (k) => (k === r || (k === 'team' && r === 'm') ? ' aria-current="page"' : '');
-  const nav = items.map(([k, h, ic, l]) => `<a href="${h}"${cur(k)}>${I(ic, ['day', 'team', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span></a>`).join('');
+  const rc = hasTeam() ? reviewCount() : 0;
+  const badge = (k) => (k === 'team' && rc ? `<em aria-label="${n(rc)} بانتظار مراجعتك">${n(rc)}</em>` : '');
+  const nav = items.map(([k, h, ic, l]) => `<a href="${h}"${cur(k)}>${I(ic, ['day', 'team', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span>${badge(k)}</a>`).join('');
   const navEl = $('#nav'); if (navEl.innerHTML !== nav) navEl.innerHTML = nav;
   const tb = $('.tabbar'); if (tb.innerHTML !== nav) tb.innerHTML = nav;
   const org = `<b>${esc(S.boot.org.name)}</b><span>${esc(S.boot.me.name)} · ${ROLE[myRole()]}</span>`;
@@ -293,8 +299,11 @@ function vDay(d) {
       ${editable || items.length ? `<div class="savebar">${saved}<span class="hint">${n(items.length)} بند${total ? ` · ${mins(total)}` : ''}</span>${submit}</div>` : ''}`;
   }
   const st = rep && !rep.error ? (rep.report?.status || 'none') : 'none';
+  const ib = inbox();
+  const back = ib && !ib.error ? ib.returned.filter((x) => x.date !== d) : [];
+  const backNote = back.length ? `<div class="notice warn" role="status"><b>${back.length === 1 ? 'تقرير مُعاد لك للتعديل' : `${n(back.length)} تقارير مُعادة لك للتعديل`}</b><p>${back.map((x) => `<a class="link" href="#/day/${x.date}">${rel(x.date)}</a>${x.review_comment ? `: ${esc(x.review_comment.slice(0, 80))}` : ''}`).join('<br>')}</p></div>` : '';
   return `<div class="wrap">${vh('يومي', `${esc(S.boot.me.name)}${pos ? ` · ${esc(pos.title)}` : ''}`, chip(st))}
-    ${dayBar('#/day', d, hist)}
+    ${backNote}${dayBar('#/day', d, hist)}
     <div class="grid2"><div class="card"><h2>${I('note')}ما أنجزته ${rel(d) === 'اليوم' ? 'اليوم' : `يوم ${rel(d)}`}</h2>${body}</div>
     <div class="stack">${jdCard(S.boot.me, hist && !hist.error ? hist : null)}${rep && !rep.error ? trailCard(rep.trail) : ''}</div></div></div>`;
 }
@@ -385,7 +394,10 @@ function vTeam(d) {
     : !day ? '<div class="skel"><i></i><i></i></div>' : day.error ? errCard(day)
     : !shown.length ? '<div class="empty"><p>لا أحد في هذا التصنيف.</p></div>'
     : [...groups.entries()].map(([k, ms]) => `${groups.size > 1 ? `<p class="grp">${esc(depById(k)?.name || 'بلا إدارة')} · ${n(ms.length)}</p>` : ''}<div class="people">${ms.map(person).join('')}</div>`).join('');
-  return `<div class="wrap">${vh('الفريق', isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير')}
+  const ib = inbox();
+  const queue = ib && !ib.error ? ib.review : [];
+  const qCard = queue.length ? `<div class="card queue"><h2>${I('hourglass')}بانتظار مراجعتك · ${n(queue.length)}</h2><div class="people">${queue.slice(0, 12).map((x) => { const m = memberById(x.member_id); return m ? `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${x.date}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>تقرير ${rel(x.date)}${x.submitted_at ? ` · رُفع ${fTime.format(new Date(x.submitted_at))}` : ''}</small></div>${x.late ? '<span class="tag late">متأخر</span>' : ''}${x.date < addD(today(), -2) ? '<span class="tag blocked">ينتظر منذ أيام</span>' : ''}</a>` : ''; }).join('')}</div>${queue.length > 12 ? `<p class="hint" style="margin-top:8px">و${n(queue.length - 12)} غيرها. ابدأ بالأقدم.</p>` : ''}</div>` : '';
+  return `<div class="wrap">${vh('الفريق', isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير')}${qCard}
     ${dayBar('#/team', d, null).replace(/<ol class="strip"[\s\S]*<\/ol>/, '')}
     ${list.length ? kpis : ''}<div class="card">${list.length ? filters : ''}${body}<p class="hint" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div></div>`;
 }
@@ -559,7 +571,7 @@ document.addEventListener('click', async (e) => {
       try {
         if (S.dirty[d] || inflight[d]) { clearTimeout(saveTimers[d]); await save(d); if (S.dirty[d]) throw new Error('تعذّر حفظ آخر التغييرات. تحقّق من الاتصال.'); }
         await call('POST', `/api/report/${d}/submit`, { today: today() });
-        delete S.draft[d]; drop(`rep|${S.boot.me.id}|${d}`, `hist|${S.boot.me.id}`, 'day|');
+        delete S.draft[d]; drop(`rep|${S.boot.me.id}|${d}`, `hist|${S.boot.me.id}`, 'day|', 'inbox');
         toast('رُفع التقرير.');
       } catch (er) { toast(er.message); el.disabled = false; }
       render(); break;
@@ -645,7 +657,7 @@ document.addEventListener('submit', async (e) => {
       if (action === 'return' && !comment) { toast('اكتب سبب الإعادة حتى يعرف ما يعدّل.'); form.comment.focus(); return; }
       if (action === 'comment' && !comment) { toast('اكتب الملاحظة.'); return; }
       const id = form.dataset.id; const d = form.dataset.d;
-      try { await call('POST', '/api/review', { member_id: id, date: d, action, comment }); drop(`rep|${id}|${d}`, `hist|${id}`, 'day|', 'audit'); toast({ approve: 'اعتُمد التقرير.', return: 'أُعيد للموظف للتعديل.', comment: 'أُضيفت الملاحظة.' }[action]); }
+      try { await call('POST', '/api/review', { member_id: id, date: d, action, comment }); drop(`rep|${id}|${d}`, `hist|${id}`, 'day|', 'audit', 'inbox'); toast({ approve: 'اعتُمد التقرير.', return: 'أُعيد للموظف للتعديل.', comment: 'أُضيفت الملاحظة.' }[action]); }
       catch (er) { toast(er.message); }
       render(); break;
     }

@@ -248,3 +248,9 @@ a.person:hover { background: var(--hover); }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media print { .side, .tabbar, .toast, .no-print { display: none !important; } body { background: #fff; color: #000; } .card { box-shadow: none; } }
 [hidden] { display: none !important; }
+
+/* صندوق الوارد: شارة العدد في الشريط السفلي، وبطاقة «بانتظار مراجعتك» */
+.tabbar a { position: relative; }
+.tabbar a em { position: absolute; top: 2px; inset-inline-end: calc(50% - 22px); font-style: normal; font-size: .68rem; line-height: 1; padding: 3px 6px; border-radius: 999px; background: var(--hot); color: var(--on-hot); font-weight: 700; }
+.queue { border-inline-start: 4px solid var(--hot); }
+.queue .person { text-decoration: none; }

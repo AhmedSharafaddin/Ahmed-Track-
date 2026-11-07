@@ -94,11 +94,20 @@ ok('double submit rejected', (await call(U.emp, 'POST', `/api/report/${today}/su
 r = await call(U.sup, 'GET', `/api/day?date=${today}`);
 ok('day board counts', r.data.rows[0].items === 4 && r.data.rows[0].minutes === 105 && r.data.rows[0].blocked === 1, r.data);
 ok('outside subtree cannot read report', (await call(U.emp2, 'GET', `/api/report?member=${mEmp}&date=${today}`)).status === 403);
+r = await call(U.sup, 'GET', `/api/inbox?today=${today}`);
+ok('inbox: supervisor sees submitted report to review', r.data.review.length === 1 && r.data.review[0].member_id === mEmp && r.data.review[0].date === today, r.data);
+r = await call(U.mgr, 'GET', `/api/inbox?today=${today}`);
+ok('inbox: upper manager sees it too (subtree)', r.data.review.some((x) => x.member_id === mEmp), r.data);
+ok('inbox: employee has nothing to review', (await call(U.emp, 'GET', `/api/inbox?today=${today}`)).data.review.length === 0);
+ok('inbox: other branch does not see it', (await call(U.emp2, 'GET', `/api/inbox?today=${today}`)).data.review.length === 0);
 ok('employee cannot review self', (await call(U.emp, 'POST', '/api/review', { member_id: mEmp, date: today, action: 'approve' })).status === 403);
 ok('sibling manager branch cannot review', (await call(U.emp2, 'POST', '/api/review', { member_id: mEmp, date: today, action: 'approve' })).status === 403);
 ok('return needs reason', (await call(U.sup, 'POST', '/api/review', { member_id: mEmp, date: today, action: 'return' })).status === 400);
 r = await call(U.sup, 'POST', '/api/review', { member_id: mEmp, date: today, action: 'return', comment: 'أضف رقم الشحنة' });
 ok('return', r.data.status === 'returned', r);
+r = await call(U.emp, 'GET', `/api/inbox?today=${today}`);
+ok('inbox: employee sees returned report with reason', r.data.returned.length === 1 && r.data.returned[0].review_comment === 'أضف رقم الشحنة', r.data);
+ok('inbox: returned report left review queue', (await call(U.sup, 'GET', `/api/inbox?today=${today}`)).data.review.length === 0);
 r = await call(U.emp, 'PUT', `/api/report/${today}`, { today, note: 'نقص كراتين', items: [{ ...items[0], text: 'استلمت الشحنة 4471 وطابقتها' }, items[1]] });
 ok('edit after return', r.status === 200 && r.data.status === 'returned' && r.data.items.length === 2, r);
 ok('resubmit', (await call(U.emp, 'POST', `/api/report/${today}/submit`, { today })).data.status === 'submitted');
@@ -146,5 +155,12 @@ ok('other org header isolated', (await call(U.emp, 'GET', '/api/bootstrap', null
 ok('junk body 400', (await W.fetch(new Request('https://api.test/api/departments', { method: 'POST', headers: { authorization: 'Bearer ' + token(U.gm), 'x-org': ORG }, body: '[1' }), env)).status === 400);
 r = await call(U.gm, 'GET', '/api/bootstrap');
 ok('query budget: bootstrap ok', r.status === 200);
+// CORS: الواجهة فقط
+const pre = async (origin) => (await W.fetch(new Request('https://api.test/api/me', { method: 'OPTIONS', headers: { origin } }), env)).headers;
+ok('cors: app origin allowed', (await pre('https://ahmedsharafaddin.github.io')).get('access-control-allow-origin') === 'https://ahmedsharafaddin.github.io');
+ok('cors: localhost allowed (dev)', (await pre('http://localhost:8797')).get('access-control-allow-origin') === 'http://localhost:8797');
+ok('cors: foreign origin refused', (await pre('https://evil.example')).get('access-control-allow-origin') === null);
+ok('cors: headers on error responses', (await W.fetch(new Request('https://api.test/api/me', { headers: { origin: 'https://ahmedsharafaddin.github.io' } }), env)).headers.get('access-control-allow-origin') === 'https://ahmedsharafaddin.github.io');
+ok('cors: env override', (await W.fetch(new Request('https://api.test/api/health', { headers: { origin: 'https://itrack.example.com' } }), { ...env, ALLOWED_ORIGINS: 'https://itrack.example.com' })).headers.get('access-control-allow-origin') === 'https://itrack.example.com');
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail ? 1 : 0);

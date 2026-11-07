@@ -28,6 +28,6 @@ http.createServer(async (req, res) => {
   const file = path.join(root, p);
   if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); res.end('nf'); return; }
   let data = fs.readFileSync(file);
-  if (p === '/config.js') data = Buffer.from(data.toString().replace('export const apiUrl = null;', `export const apiUrl = 'http://localhost:${port}';`));
+  if (p === '/config.js') data = Buffer.from(data.toString().replace(/export const apiUrl = [^;]*;/, `export const apiUrl = 'http://localhost:${port}';`));
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream' }); res.end(data);
 }).listen(port, () => console.log('itrack test server on', port));

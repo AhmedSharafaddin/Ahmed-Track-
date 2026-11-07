@@ -106,7 +106,9 @@ async function join(p, email, pass = 'Passw0rd!') {
   await join(sup, 'sup@org.test'); await sup.waitForSelector('.kpis');
   ok('supervisor lands on team', sup.url().includes('#/team'));
   ok('kpi 1/1 submitted', (await text(sup, '.kpi b')).startsWith('1'));
-  ok('row shows blocked tag', (await text(sup, '.person')).includes('1 متعثّر'));
+  ok('row shows blocked tag', (await text(sup, '.card:not(.queue) .person')).includes('1 متعثّر'));
+  ok('review queue lists the submitted report', (await sup.$$('.queue .person')).length === 1 && (await text(sup, '.queue')).includes('سارة'));
+  ok('team nav shows review badge', (await text(sup, '#nav a[href="#/team"] em')) === '1');
   await axe(sup, 'team (navy desk)');
   await sup.click('a.person'); await sup.waitForSelector('[data-form=review]');
   ok('member report readable', (await sup.$$('.items .item')).length === 3 && (await text(sup, '.items')).includes('السبب'));
@@ -126,7 +128,8 @@ async function join(p, email, pass = 'Passw0rd!') {
 
   // ٥) المسؤول يعتمد ويرى السجل
   await gm.goto(BASE + '#/team'); await gm.waitForSelector('.kpis'); await wait(gm, 500);
-  ok('admin sees whole org (2)', (await gm.$$('a.person')).length === 2);
+  ok('admin sees whole org (2)', (await gm.$$('.card:not(.queue) a.person')).length === 2);
+  ok('admin queue shows resubmitted report', (await gm.$$('.queue .person')).length === 1);
   await gm.click('a.person:has-text("سارة")'); await gm.waitForSelector('[data-form=review]');
   await gm.fill('[data-form=review] [name=comment]', 'ممتاز'); await gm.click('[data-form=review] button[value=approve]'); await wait(gm, 700);
   ok('approved', (await text(gm, '.vh .st')).includes('معتمد'));

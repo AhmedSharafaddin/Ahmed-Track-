@@ -74,11 +74,26 @@ async function migrate(db) {
 }
 
 /* ═════════════ أدوات ═════════════ */
+// CORS: نسمح فقط لواجهة ITrack (وللتطوير المحلي). للنقل إلى نطاق آخر: متغير ALLOWED_ORIGINS (مفصول بفواصل).
+const ORIGINS = ['https://ahmedsharafaddin.github.io'];
 const CORS = {
-  'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,PUT,PATCH,OPTIONS',
-  'access-control-allow-headers': 'authorization,content-type,x-org', 'access-control-max-age': '86400',
+  'access-control-allow-methods': 'GET,POST,PUT,PATCH,OPTIONS',
+  'access-control-allow-headers': 'authorization,content-type,x-org', 'access-control-max-age': '86400', vary: 'Origin',
 };
-const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS } });
+function allowOrigin(origin, env) {
+  if (!origin) return null;
+  const list = env.ALLOWED_ORIGINS ? env.ALLOWED_ORIGINS.split(',').map((x) => x.trim()) : ORIGINS;
+  if (list.includes('*') || list.includes(origin)) return origin;
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null;
+}
+function withCors(res, req, env) {
+  const h = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS)) h.set(k, v);
+  const o = allowOrigin(req.headers.get('origin'), env);
+  if (o) h.set('access-control-allow-origin', o);
+  return new Response(res.body, { status: res.status, headers: h });
+}
+const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 class Fail extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }
 const fail = (status, code, message) => { throw new Fail(status, code, message); };
 const id = () => crypto.randomUUID();
@@ -483,6 +498,20 @@ route('GET', '/api/history', async ({ db, v, q }) => {
   };
 });
 
+/** صندوق الوارد: تقارير مرفوعة تنتظر مراجعتي (آخر ١٤ يومًا، الأقدم أولًا)، وتقاريري المُعادة لي للتعديل. */
+route('GET', '/api/inbox', async ({ db, v, q }) => {
+  const t = isDay(q.get('today')) ? q.get('today') : dayOf(now());
+  const from = addDays(t, -14);
+  const [sub, ret] = await db.batch([
+    db.prepare("SELECT member_id, date, submitted_at, late FROM reports WHERE org_id = ? AND status = 'submitted' AND date >= ? AND member_id != ? ORDER BY date, submitted_at LIMIT 300").bind(v.org_id, from, v.id),
+    db.prepare("SELECT date, review_comment, reviewed_at FROM reports WHERE member_id = ? AND status = 'returned' ORDER BY date LIMIT 30").bind(v.id),
+  ]);
+  return {
+    review: sub.results.filter((r) => canReview(v, r.member_id)).slice(0, 100).map((r) => ({ member_id: r.member_id, date: r.date, submitted_at: r.submitted_at, late: !!r.late })),
+    returned: ret.results,
+  };
+});
+
 /** سجل التدقيق: للمسؤول كاملًا، ولغيره ما يخص من يراهم. */
 route('GET', '/api/audit', async ({ db, v, q }) => {
   const mid = q.get('member');
@@ -503,32 +532,34 @@ const OPEN = new Set(['/api/health']);
 const NO_ORG = new Set(['/api/me', '/api/orgs']);
 
 export default {
-  async fetch(req, env) {
-    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
-    const url = new URL(req.url);
-    const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
-    if (!r) return json({ error: 'not-found', message: 'المسار غير موجود.' }, 404);
-    try {
-      const db = env.DB;
-      if (!db) fail(500, 'no-db', 'قاعدة البيانات غير مربوطة (DB).');
-      await migrate(db);
-      const ctx = { db, env, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
-      if (!OPEN.has(url.pathname)) {
-        ctx.user = await identity(req, env);
-        if (!ctx.user) fail(401, 'auth', 'سجّل الدخول من جديد.');
-        if (!NO_ORG.has(url.pathname)) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
-      }
-      if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-        const raw = await req.text();
-        if (raw.length > MAX_BODY) fail(413, 'too-big', 'الطلب أكبر من المسموح.');
-        try { ctx.body = raw ? JSON.parse(raw) : {}; } catch { fail(400, 'invalid', 'صيغة الطلب غير صحيحة.'); }
-        if (!ctx.body || typeof ctx.body !== 'object' || Array.isArray(ctx.body)) fail(400, 'invalid', 'صيغة الطلب غير صحيحة.');
-      }
-      return json(await r.fn(ctx));
-    } catch (e) {
-      if (e instanceof Fail) return json({ error: e.code, message: e.message }, e.status);
-      console.error(e);
-      return json({ error: 'server', message: 'خطأ في الخادم. حاول مرة أخرى.' }, 500);
-    }
-  },
+  async fetch(req, env) { return withCors(await handle(req, env), req, env); },
 };
+
+async function handle(req, env) {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204 });
+  const url = new URL(req.url);
+  const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
+  if (!r) return json({ error: 'not-found', message: 'المسار غير موجود.' }, 404);
+  try {
+    const db = env.DB;
+    if (!db) fail(500, 'no-db', 'قاعدة البيانات غير مربوطة (DB).');
+    await migrate(db);
+    const ctx = { db, env, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
+    if (!OPEN.has(url.pathname)) {
+      ctx.user = await identity(req, env);
+      if (!ctx.user) fail(401, 'auth', 'سجّل الدخول من جديد.');
+      if (!NO_ORG.has(url.pathname)) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
+    }
+    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+      const raw = await req.text();
+      if (raw.length > MAX_BODY) fail(413, 'too-big', 'الطلب أكبر من المسموح.');
+      try { ctx.body = raw ? JSON.parse(raw) : {}; } catch { fail(400, 'invalid', 'صيغة الطلب غير صحيحة.'); }
+      if (!ctx.body || typeof ctx.body !== 'object' || Array.isArray(ctx.body)) fail(400, 'invalid', 'صيغة الطلب غير صحيحة.');
+    }
+    return json(await r.fn(ctx));
+  } catch (e) {
+    if (e instanceof Fail) return json({ error: e.code, message: e.message }, e.status);
+    console.error(e);
+    return json({ error: 'server', message: 'خطأ في الخادم. حاول مرة أخرى.' }, 500);
+  }
+}
