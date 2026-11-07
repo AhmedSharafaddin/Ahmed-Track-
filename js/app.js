@@ -367,6 +367,7 @@ document.addEventListener('click', (e) => {
     case 'waiting': { const t = taskById(id); if (t) { const on = t.status !== 'waiting'; forcePane = true; setWaiting(id, on); toast(on ? 'سُجّلت بانتظار الاعتماد. لن تُحسب متأخرة عليك.' : 'أُعيدت مفتوحة.'); } break; }
     case 'theme': setTheme(el.dataset.v); break;
     case 'star': { const t = taskById(id); if (t) updateTask(id, { important: !t.important }); break; }
+    case 'share': { const t = taskById(id); if (t) { updateTask(id, { shared: !t.shared }); toast(t.shared ? 'صارت خاصة بك.' : 'تظهر الآن لمديرك (قراءة فقط).'); } break; }
     case 'focus': {
       const fp = focusPatch();
       if (!fp) { toast(FULL_MSG); break; }
@@ -954,7 +955,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     if (e.data?.type === 'nav' && e.data.hash) location.hash = e.data.hash; // نقر على تنبيه والتطبيق مفتوح
   });
   // التسجيل بعد اكتمال الفتح: في أول زيارة لا ينافس تنزيلُ ملفات التخزين عرضَ الشاشة
-  const register = () => sw.register('sw.js', { updateViaCache: 'none' })
+  const register = () => sw.register(globalThis.CC_BACKEND ? '../sw.js' : 'sw.js', { updateViaCache: 'none' })
     .then((reg) => {
       env.swReg = reg;
       notify.reg = reg;

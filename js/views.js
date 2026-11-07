@@ -600,6 +600,7 @@ export function pane(t) {
     <div class="pblk">
       <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
       ${!done ? `<button class="prow${inFocus ? ' on' : ''}" data-act="${inFocus ? 'unfocus' : 'focus'}" data-id="${t.id}" ${!inFocus && full ? 'disabled' : ''}>${I('today', 'd')}<span>${inFocus ? 'ضمن أولويات اليوم' : full ? 'أولويات اليوم ممتلئة (٣)' : 'أضف إلى أولويات اليوم'}</span>${inFocus ? `<em>${I('x')}</em>` : ''}</button>` : ''}
+      ${globalThis.CC_BACKEND ? `<button class="prow${t.shared ? ' on' : ''}" data-act="share" data-id="${t.id}" aria-pressed="${!!t.shared}">${I('people', 'd')}<span><b>${t.shared ? 'يراها مديرك (اضغط للإخفاء)' : 'خاصة بي'}</b><small>${t.shared ? 'للقراءة فقط، لمن فوقك في الهيكل' : 'اضغط لإظهارها لمديرك'}</small></span></button>` : ''}
     </div>
 
     <div class="psteps" id="steps">

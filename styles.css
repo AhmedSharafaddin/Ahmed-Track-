@@ -1358,3 +1358,6 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
 /* الإشعار المؤقت: في الثيمات الداكنة الخلفية والنص كانا متقاربين */
 :root[data-theme="petrol"] .toast, :root[data-theme="navy"] .toast, :root[data-theme="aqua"] .toast,
 :root[data-theme="petrol"] .toast .link, :root[data-theme="navy"] .toast .link, :root[data-theme="aqua"] .toast .link { color: #ffffff; }
+
+/* وسم الربع في لوحة المهمة: اللوحة داكنة في petrol/navy على الجوال أيضًا (كانت القاعدة للشاشات الكبيرة فقط) */
+:root[data-theme="petrol"] .pane .quadtag, :root[data-theme="navy"] .pane .quadtag { color: #f4efe3; background: rgba(255,255,255,.12); }

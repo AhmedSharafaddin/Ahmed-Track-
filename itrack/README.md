@@ -22,6 +22,9 @@
 - **CORS**: الخادم يقبل الطلبات من `https://ahmedsharafaddin.github.io` والتطوير المحلي فقط. عند النقل لنطاق آخر أضف متغير `ALLOWED_ORIGINS` في إعدادات الـWorker (مفصول بفواصل).
 - الانضمام: المسؤول يضيف البريد ← الموظف ينشئ حسابه بنفس البريد ويؤكّده ← يُربط تلقائيًا. بريد غير مؤكد لا يُربط.
 
+## مساحتي الشخصية (`my/`)
+واجهة «مركز القيادة» كاملة (مهام، مجالات، أهداف، مصفوفة، لوحة، تركيز) داخل ITrack. بياناتها وثائق خاصة بصاحبها في خادم ITrack (`/api/p`)، والمهمة التي يضع عليها صاحبها «يراها مديرك» تظهر لمن فوقه فقط (`/api/team/tasks`). الدخول بنفس حساب ITrack. الملف `my/index.html` مولَّد: `node itrack/tools/make-my.mjs` بعد أي تعديل على `index.html` في الجذر.
+
 ## النشر (مرة واحدة، من لوحة Cloudflare)
 1. **D1**: Storage & databases ← D1 ← Create ← الاسم `itrack`.
 2. **Worker**: Workers & Pages ← Create ← Worker ← الاسم `itrack-api` ← Deploy ← Edit code ← الصق `worker/worker.js` كاملًا ← Deploy.
@@ -33,7 +36,7 @@
 
 ## الاختبار (محليًا، بلا Cloudflare)
 ```bash
-node --experimental-sqlite itrack/tests/worker.test.mjs     # الخادم: ٧٤ فحصًا (صلاحيات، دورة التقرير، التدقيق، التوصيف)
+node --experimental-sqlite itrack/tests/worker.test.mjs     # الخادم: ٩١ فحصًا (صلاحيات، دورة التقرير، التدقيق، التوصيف)
 AXE=/path/to/axe.min.js node itrack/tests/e2e.js           # الواجهة كاملة: مسؤول + مشرف + موظفة، axe في الثيمات الثلاثة
 ```
 `tests/d1shim.mjs` يحاكي D1 فوق node:sqlite ويوقّع رموز Firebase بمفتاح اختبار؛ `tests/server.mjs` يشغّل الواجهة والخادم معًا.

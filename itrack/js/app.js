@@ -111,6 +111,7 @@ function paintNav() {
   const r = route().name || 'day';
   const items = [
     ['day', '#/day', 'today', 'يومي'],
+    ['my', 'my/', 'note', 'مهامي'], // مساحتي الشخصية (واجهة مركز القيادة داخل ITrack)
     hasTeam() && ['team', '#/team', 'people', 'الفريق'],
     isAdmin() && ['org', '#/org', 'doc', 'الهيكل'],
     isAdmin() && ['audit', '#/audit', 'list', 'السجل'],

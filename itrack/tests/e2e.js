@@ -49,7 +49,7 @@ async function join(p, email, pass = 'Passw0rd!') {
   await gm.fill('[data-form=org] [name=name]', 'إدارة الخدمات اللوجستية'); await gm.fill('[data-form=org] [name=my_name]', 'أحمد');
   await gm.click('[data-form=org] button'); await gm.waitForSelector('.tabs'); await wait(gm, 500);
   ok('lands on structure/departments', gm.url().endsWith('#/org/departments'), gm.url());
-  ok('sidebar shows admin nav', (await gm.$$eval('#nav a', (a) => a.map((x) => x.textContent))).join() === 'يومي,الفريق,الهيكل,السجل,الإعدادات');
+  ok('sidebar shows admin nav', (await gm.$$eval('#nav a', (a) => a.map((x) => x.textContent))).join() === 'يومي,مهامي,الفريق,الهيكل,السجل,الإعدادات');
   await gm.fill('[data-form=dep][data-id=""] [name=name]', 'اللوجستيات'); await gm.click('[data-form=dep][data-id=""] button'); await wait(gm, 500);
   ok('department added', (await gm.$$('.person')).length === 1);
   await gm.click('.tabs a[href="#/org/positions"]'); await wait(gm);
@@ -147,6 +147,39 @@ async function join(p, email, pass = 'Passw0rd!') {
   await emp.goto(BASE + '#/day'); await wait(emp, 600); await axe(emp, 'day approved (petrol mobile)');
   await emp.goto(BASE + '#/team'); await wait(emp, 500);
   ok('employee blocked from team page', (await text(emp, '.wrap')).includes('ليست ضمن صلاحياتك'));
+  // ٨) مساحتي الشخصية: واجهة مركز القيادة داخل ITrack فوق خادم ITrack
+  const MY = `http://localhost:${PORT}/Ahmed-Track-/itrack/my/`;
+  const tok = async (p, email) => { const u = await p.evaluate((e) => JSON.parse(localStorage.getItem('fake:users'))[e], email); return (await fetch(`http://localhost:${PORT}/__token?uid=${u.uid}&email=${encodeURIComponent(email)}&v=1`)).text(); };
+  const srv2 = async (p, email, method, url, body) => { const r = await fetch(`http://localhost:${PORT}${url}`, { method, headers: { authorization: 'Bearer ' + await tok(p, email), 'x-org': await p.evaluate(() => JSON.parse(localStorage.getItem('it:org'))), 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return r.json(); };
+  const html = fs.readFileSync(path.join(__dirname, '../my/index.html'), 'utf8');
+  ok('my/index.html is up to date (node itrack/tools/make-my.mjs)', html === (await import('../tools/make-my.mjs')).build());
+  await emp.goto(BASE); await emp.waitForSelector('.tabbar a[href="my/"]');
+  ok('ITrack nav links to my space', (await text(emp, '.tabbar a[href="my/"]')).includes('مهامي'));
+  await emp.goto(MY); await emp.waitForSelector('.tabbar a', { timeout: 10000 }); await emp.waitForFunction(() => document.querySelector('#nav .ni'), null, { timeout: 10000 }); await wait(emp, 800);
+  ok('my space renders Command Center UI', (await text(emp, '.tabbar')).includes('الأهداف') && (await emp.$eval('#nav', (e) => e.textContent)).includes('كل المهام'));
+  ok('my space has a way back to ITrack', !!(await emp.$('.tabbar a.itrack-back')) );
+  const t0 = Date.now();
+  await emp.fill('input[placeholder^="أضف مهمة"]', 'مهمتي الخاصة الأولى'); await emp.press('input[placeholder^="أضف مهمة"]', 'Enter'); await wait(emp, 1800);
+  let docs = (await srv2(emp, 'sara@org.test', 'GET', '/api/p/tasks')).docs;
+  ok('task typed in UI is saved in ITrack server', docs.length === 1 && docs[0].title === 'مهمتي الخاصة الأولى' && !docs[0].shared, docs);
+  { const ar = (await srv2(emp, 'sara@org.test', 'GET', '/api/p/areas')).docs; ok('seed areas saved too', ar.length === 2, ar); }
+  ok('manager sees nothing yet', (await srv2(sup, 'sup@org.test', 'GET', '/api/team/tasks')).tasks.length === 0);
+  await emp.reload(); await emp.waitForFunction(() => document.querySelector('#nav .ni')); await wait(emp, 800);
+  ok('task survives reload', (await text(emp, '#view')).includes('مهمتي الخاصة الأولى'), (await text(emp, '#view')).slice(0, 200));
+  // مشاركة المهمة مع المدير
+  await emp.goto(MY + '#/all'); await wait(emp, 600);
+  await emp.click('.tt >> visible=true'); await emp.waitForSelector('[data-act=share]'); await emp.click('[data-act=share]'); await wait(emp, 1800);
+  const tm = (await srv2(sup, 'sup@org.test', 'GET', '/api/team/tasks')).tasks;
+  ok('shared task becomes visible to manager (read-only)', tm.length === 1 && tm[0].title === 'مهمتي الخاصة الأولى', tm);
+  ok('admin (above) sees it too', (await srv2(gm, 'gm@org.test', 'GET', '/api/team/tasks')).tasks.length === 1);
+  await emp.click('[data-act=share]'); await wait(emp, 1800);
+  ok('un-share hides it again', (await srv2(sup, 'sup@org.test', 'GET', '/api/team/tasks')).tasks.length === 0);
+  await axe(emp, 'my space task pane (mobile)');
+  await gm.goto(MY); await gm.waitForSelector('#nav .ni'); await wait(gm, 1000);
+  ok('another user sees none of her tasks', (await srv2(gm, 'gm@org.test', 'GET', '/api/p/tasks')).docs.length === 0);
+  await axe(gm, 'my space today (desktop)');
+  await gm.screenshot({ path: `${OUT}/my_desktop.png` });
+  await emp.screenshot({ path: `${OUT}/my_mobile.png` });
   for (const [n, p] of [['gm', gm], ['emp', emp], ['sup', sup]]) ok(`no errors (${n})`, !p.errs.length, p.errs);
   await b.close();
   console.log(`\n${pass} pass, ${fail} fail`);

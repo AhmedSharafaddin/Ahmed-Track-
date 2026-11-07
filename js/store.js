@@ -11,15 +11,23 @@ import { firebaseConfig } from './config.js';
 import { now } from './utils.js';
 
 export const COLLS = ['areas', 'goals', 'tasks', 'reviews'];
-const LS_DATA = 'cc:data:v1';
-const LS_MIGRATED = 'cc:migrated:'; // + uid
-const LS_LAST = 'cc:lastUser'; // {uid, email} آخر حساب سجّل الدخول على هذا الجهاز
-const LS_SNAP = 'cc:snap:'; // + uid  آخر نسخة من بيانات الحساب
-const LS_QUEUE = 'cc:queue:'; // + uid  كتابات تمت قبل جاهزية Firebase
+// BK: عند تشغيل الواجهة داخل ITrack (صفحة /itrack/my/) تضبط الصفحة window.CC_BACKEND ⇒ البيانات في خادم ITrack لا Firestore.
+// مفاتيح التخزين بسابقة مختلفة (cci:) كي لا تختلط بنسخة مركز القيادة المستقلة على نفس النطاق.
+const BK = globalThis.CC_BACKEND || null;
+const NS = BK ? 'cci:' : 'cc:';
+const LS_DATA = NS + 'data:v1';
+const LS_MIGRATED = NS + 'migrated:'; // + uid
+const LS_LAST = NS + 'lastUser'; // {uid, email} آخر حساب سجّل الدخول على هذا الجهاز
+const LS_SNAP = NS + 'snap:'; // + uid  آخر نسخة من بيانات الحساب
+const LS_QUEUE = NS + 'queue:'; // + uid  كتابات تمت قبل جاهزية Firebase
+const LS_WQ = NS + 'wq:'; // + uid  طابور الكتابة إلى خادم ITrack (يبقى عبر إعادة التحميل)
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 
 /** المجالات الافتراضية بمعرّفات ثابتة — تكرار الإضافة لا يُنشئ نسخًا مكررة. */
-export const SEED_AREAS = [
+export const SEED_AREAS = BK ? [
+  { id: 'area-work', name: 'العمل', color: '#2f7d6d', emoji: '💼', order: 1 },
+  { id: 'area-personal', name: 'شخصي / تطوير ذاتي', color: '#5b6bbf', emoji: '🌱', order: 2 },
+] : [
   { id: 'area-asas', name: 'أسس تيليكوم', color: '#2f7d6d', emoji: '💼', order: 1 },
   { id: 'area-aljoby', name: 'الجوبي', color: '#b5832a', emoji: '🛋️', order: 2 },
   { id: 'area-personal', name: 'شخصي / تطوير ذاتي', color: '#5b6bbf', emoji: '🌱', order: 3 },
@@ -244,6 +252,127 @@ class CloudAdapter {
   }
 }
 
+/* ───────────── محرّك ITrack (D1) ─────────────
+   نفس واجهة CloudAdapter لكن فوق خادم ITrack: وثائق JSON خاصة بصاحبها (/api/p)، والمهمة التي عليها
+   shared:true يراها مديروه فقط. الدخول: Firebase Auth بنفس جلسة ITrack (تطبيق باسم 'itrack') ⇒ دخول واحد للاثنين.
+   الكتابة: تحديث فوري في الواجهة ← طابور محفوظ على الجهاز ← دفعات حتى ٤٠ عملية، وإعادة محاولة عند انقطاع الاتصال. */
+const stable = (o) => (o && typeof o === 'object' ? (Array.isArray(o) ? `[${o.map(stable)}]` : `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)}}`) : JSON.stringify(o));
+class ItrackAdapter {
+  kind = 'cloud';
+  constructor(cfg) { this.cfg = cfg; this.wq = []; this.sending = []; this.confirmed = false; }
+
+  async init() {
+    const [appMod, authMod] = await Promise.all([import(FB + 'firebase-app.js'), import(FB + 'firebase-auth.js')]);
+    this.authMod = authMod;
+    this.auth = authMod.getAuth(appMod.initializeApp(firebaseConfig, 'itrack'));
+  }
+  onAuth(cb) { return this.authMod.onAuthStateChanged(this.auth, cb); }
+  signIn(email, pass) { return this.authMod.signInWithEmailAndPassword(this.auth, email, pass); }
+  signUp(email, pass) { return this.authMod.createUserWithEmailAndPassword(this.auth, email, pass); }
+  resetPassword(email) { return this.authMod.sendPasswordResetEmail(this.auth, email); }
+  signOut() { return this.authMod.signOut(this.auth); }
+  idToken() { return this.auth.currentUser ? this.auth.currentUser.getIdToken() : Promise.resolve(null); }
+
+  async _api(method, path, body) {
+    const token = await this.idToken();
+    if (!token) throw Object.assign(new Error('signin'), { code: 'signin' });
+    const org = this.cfg.org?.();
+    if (!org) throw Object.assign(new Error('no-org'), { code: 'no-org' });
+    const res = await fetch(this.cfg.api + path, { method, headers: { authorization: `Bearer ${token}`, 'x-org': org, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) { let d = {}; try { d = await res.json(); } catch {} throw Object.assign(new Error(d.message || `HTTP ${res.status}`), { code: d.error || 'http', status: res.status }); }
+    return res.json();
+  }
+
+  _status() { return { ready: true, serverConfirmed: this.confirmed, pending: this.wq.length + this.sending.length > 0, error: this.error || undefined }; }
+  _emit(changed) { this.onChange(this.state, this._status(), changed); }
+  _rebuild() { this.state = Object.fromEntries(COLLS.map((c) => [c, [...this.maps[c].values()]])); }
+
+  start(uid, onChange, seed) {
+    this.uid = uid;
+    this.onChange = onChange;
+    this.state = { ...emptyState(), ...(seed || {}) };
+    this.maps = Object.fromEntries(COLLS.map((c) => [c, new Map(this.state[c].map((x) => [x.id, x]))]));
+    this.wq = readJSON(LS_WQ + uid) || [];
+    this.poll = setInterval(() => { if (document.visibilityState === 'visible') this._pull(); }, 90000);
+    this.onVis = () => { if (document.visibilityState === 'visible') this._pull(); };
+    document.addEventListener('visibilitychange', this.onVis);
+    this.onOnline = () => this._flushSoon(0);
+    window.addEventListener('online', this.onOnline);
+    if (this.wq.length) this._flushSoon(0); else this._pull();
+  }
+  stop() {
+    clearInterval(this.poll); clearTimeout(this.timer);
+    document.removeEventListener('visibilitychange', this.onVis); window.removeEventListener('online', this.onOnline);
+    this.saveSnap.flush();
+  }
+  saveSnap = debounce(() => { if (this.uid) writeJSON(LS_SNAP + this.uid, this.state); }, 800);
+
+  /** تحميل من الخادم. يتوقف إن وُجدت كتابات معلّقة كي لا تُستبدل تعديلات لم تُرسل بعد. */
+  async _pull() {
+    if (this.pulling || this.wq.length || this.sending.length) return;
+    this.pulling = true;
+    try {
+      const res = await Promise.all(COLLS.map((c) => this._api('GET', `/api/p/${c}`)));
+      let changed = !this.confirmed;
+      COLLS.forEach((c, i) => {
+        const next = new Map(res[i].docs.map(({ updated_at, ...d }) => [d.id, d]));
+        const cur = this.maps[c];
+        if (next.size !== cur.size || [...next].some(([id, v]) => stable(v) !== stable(cur.get(id)))) { this.maps[c] = next; changed = true; }
+      });
+      this.confirmed = true; this.error = null;
+      if (changed) { this._rebuild(); this.saveSnap(); }
+      this._emit(changed);
+    } catch (e) {
+      this.error = e.code === 'no-org' ? e : null; // انقطاع الاتصال: صامت، نعرض النسخة المحفوظة
+      this._emit(false);
+    } finally { this.pulling = false; }
+  }
+
+  _persist() { writeJSON(LS_WQ + this.uid, [...this.sending, ...this.wq]); }
+  _enqueue(op) {
+    // تعديلات متتالية على نفس الوثيقة تُدمج في عملية واحدة (أقل طلبات)
+    for (let i = this.wq.length - 1; i >= 0; i--) {
+      const q = this.wq[i];
+      if (q.col !== op.col || q.id !== op.id) continue;
+      if (op.op === 'patch' && q.op !== 'del') { q.data = { ...q.data, ...op.data }; this._persist(); this._flushSoon(400); return; }
+      break;
+    }
+    this.wq.push(op); this._persist(); this._flushSoon(400);
+  }
+  _flushSoon(ms) { clearTimeout(this.timer); this.timer = setTimeout(() => this._flush(), ms); }
+  async _flush() {
+    if (this.flushing || !this.wq.length) return;
+    this.flushing = true;
+    this.sending = this.wq.splice(0, 40);
+    try {
+      await this._api('POST', '/api/p', { ops: this.sending });
+      this.sending = []; this._persist();
+      if (this.wq.length) this._flushSoon(0);
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 429) {
+        console.error('ITrack write rejected, dropping batch', e.code, e.message); // عملية مرفوضة لا تُعاد وإلا علقت كل ما بعدها
+        this.sending = []; this._persist();
+      } else { this.wq.unshift(...this.sending); this.sending = []; this._persist(); this._flushSoon(8000); }
+    } finally {
+      this.flushing = false;
+      this._emit(false);
+    }
+  }
+
+  put(coll, item, patch) {
+    this.maps[coll].set(item.id, item); this._rebuild(); this._emit(true); this.saveSnap();
+    this._enqueue(patch ? { op: 'patch', col: coll, id: item.id, data: clean(patch) } : { op: 'set', col: coll, id: item.id, data: clean(item) });
+  }
+  applyPatch(coll, id, patch) {
+    const cur = this.maps[coll].get(id);
+    this.put(coll, { ...(cur || {}), ...patch, id }, cur ? patch : null);
+  }
+  remove(coll, id) {
+    this.maps[coll].delete(id); this._rebuild(); this._emit(true); this.saveSnap();
+    this._enqueue({ op: 'del', col: coll, id });
+  }
+}
+
 /** بعد أول رسم للشاشة: يعطي المتصفح فرصة لعرض الواجهة قبل العمل الثقيل. */
 const afterPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
@@ -302,7 +431,7 @@ export const store = {
 
   async _startCloud() {
     try {
-      const cloud = new CloudAdapter();
+      const cloud = BK ? new ItrackAdapter(BK) : new CloudAdapter();
       await cloud.init();
       this.cloud = cloud;
       this.offline = false;
@@ -331,7 +460,7 @@ export const store = {
         const prev = readJSON(LS_LAST);
         try {
           localStorage.removeItem(LS_LAST);
-          if (prev?.uid) { localStorage.removeItem(LS_SNAP + prev.uid); localStorage.removeItem(LS_QUEUE + prev.uid); }
+          if (prev?.uid) { localStorage.removeItem(LS_SNAP + prev.uid); localStorage.removeItem(LS_QUEUE + prev.uid); localStorage.removeItem(LS_WQ + prev.uid); }
         } catch {}
         this.user = null;
         this.mode = 'cloud-signed-out';
@@ -361,11 +490,12 @@ export const store = {
       const local = this.local.read();
       if (local) {
         const seedIds = new Set(SEED_AREAS.map((a) => a.id));
+        const hadAreas = this.state.areas.length; // قبل الرفع: الرفع نفسه يملأ الحالة فيُسقط بقية المجالات الافتراضية
         for (const c of COLLS) {
           const remote = new Map(this.state[c].map((x) => [x.id, x]));
           for (const item of local[c] || []) {
             // المجالات الافتراضية المحلية لا تعلو على مجالات الحساب (قد يكون المستخدم عدّلها أو حذفها)
-            if (c === 'areas' && seedIds.has(item.id) && this.state.areas.length) continue;
+            if (c === 'areas' && seedIds.has(item.id) && hadAreas) continue;
             const r = remote.get(item.id);
             if (!r || (item.updatedAt || '') > (r.updatedAt || '')) this.cloud.put(c, item);
           }
@@ -397,7 +527,7 @@ export const store = {
     const uid = this.user?.uid;
     try {
       localStorage.removeItem(LS_LAST);
-      if (uid) { localStorage.removeItem(LS_SNAP + uid); localStorage.removeItem(LS_QUEUE + uid); }
+      if (uid) { localStorage.removeItem(LS_SNAP + uid); localStorage.removeItem(LS_QUEUE + uid); localStorage.removeItem(LS_WQ + uid); }
     } catch {}
   },
 

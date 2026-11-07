@@ -23,11 +23,15 @@ http.createServer(async (req, res) => {
     const r = await W.fetch(new Request(url, { method: req.method, headers: req.headers, body }), env);
     res.writeHead(r.status, Object.fromEntries(r.headers)); res.end(Buffer.from(await r.arrayBuffer())); return;
   }
-  let p = url.pathname.replace(/^\/itrack/, '') || '/';
+  // /Ahmed-Track-/... يحاكي GitHub Pages: الجذر = مركز القيادة، و/itrack/ = ITrack (صفحة /itrack/my/ تستورد ../../js)
+  let base = root; let p;
+  if (url.pathname.startsWith('/Ahmed-Track-/itrack/')) p = url.pathname.slice('/Ahmed-Track-/itrack'.length);
+  else if (url.pathname.startsWith('/Ahmed-Track-/')) { base = path.resolve(root, '..'); p = url.pathname.slice('/Ahmed-Track-'.length); }
+  else p = url.pathname.replace(/^\/itrack/, '') || '/';
   if (p.endsWith('/')) p += 'index.html';
-  const file = path.join(root, p);
-  if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); res.end('nf'); return; }
+  const file = path.join(base, p);
+  if (!file.startsWith(base) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); res.end('nf'); return; }
   let data = fs.readFileSync(file);
-  if (p === '/config.js') data = Buffer.from(data.toString().replace(/export const apiUrl = [^;]*;/, `export const apiUrl = 'http://localhost:${port}';`));
+  if (p === '/config.js' && base === root) data = Buffer.from(data.toString().replace(/export const apiUrl = [^;]*;/, `export const apiUrl = 'http://localhost:${port}';`));
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream' }); res.end(data);
 }).listen(port, () => console.log('itrack test server on', port));

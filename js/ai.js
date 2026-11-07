@@ -7,18 +7,20 @@ import { store } from './store.js';
 import { todayKey, keyAdd, esc, n, fmtDate, isDateKey } from './utils.js';
 import { areas, people, createTask, updateTask, taskById, settings } from './model.js';
 
-const base = () => (pushConfig?.url || '').replace(/\/$/, '');
+const base = () => (globalThis.CC_BACKEND?.api || pushConfig?.url || '').replace(/\/$/, '');
 const WEEKDAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const VOICE_MAX = 90; // ثانية للملاحظة الصوتية
 const SEG = 90; // طول مقطع المحضر بالثواني (كل مقطع يُفرَّغ وحده أثناء الاجتماع)
 
 export const aiState = () => {
   if (!base()) return 'no-server';
+  if (globalThis.CC_BACKEND && !globalThis.CC_BACKEND.ai) return 'no-ai'; // خادم ITrack لا يوفّر الذكاء الاصطناعي بعد
   if (store.mode !== 'cloud') return 'signin';
   if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) return 'no-mic';
   return 'ok';
 };
 export const AI_MSG = {
+  'no-ai': 'الإدخال الصوتي ومحضر الاجتماع جاهزان في الواجهة، ويعملان حين يُفعَّل الذكاء الاصطناعي على خادم ITrack (لاحقًا).',
   'no-server': 'الإدخال الصوتي يعمل بعد تشغيل خادم التطبيق (الإعدادات ← التنبيهات).',
   signin: 'سجّل الدخول للمزامنة أولًا، فالخادم لا يقبل إلا طلباتك الموقّعة.',
   'no-mic': 'هذا المتصفح لا يسمح بتسجيل الصوت.',

@@ -29,4 +29,5 @@ export const firebaseConfig = {
 
 // خادم التنبيهات (Cloudflare Worker مجاني) — يرسل التنبيهات للجوال واللابتوب حتى والتطبيق مغلق.
 // اتركه null ⇒ التنبيهات تعمل فقط والتطبيق مفتوح. خطوات التفعيل في worker/README.md.
-export const pushConfig = { url: 'https://cc-push.osys783.workers.dev' };
+// داخل ITrack (/itrack/my/) لا نستخدم خادم التنبيهات المستقل: التذكيرات محلية أثناء فتح الموقع.
+export const pushConfig = { url: globalThis.CC_BACKEND ? '' : 'https://cc-push.osys783.workers.dev' };
