@@ -1,16 +1,15 @@
 // يبني جهة عرض (Demo) على خادم ITrack قيد التشغيل بهيكل الشركة الحقيقي: ٧ إدارات و١٣ قسمًا (من جدولي أحمد).
-//   node itrack/tools/seed-demo.mjs http://localhost:8080 [--reports]
+//   node itrack/tools/seed-demo.mjs http://localhost:8080 [--reports] [--profile=asas|generic]  (الافتراضي: generic)
 // • ما يُبنى: الإدارات والأقسام + المدير العام + المدير التنفيذي.
 // • أعداد الموظفين في جدول الشركة مضخّمة (الفعلي نحو ٢٥) فلا يُبنى عليها. الأشخاص الحقيقيون ومسؤوليات الوظائف [TBD] حتى يصل التوصيف.
 // • --reports: فريق تجريبي صغير (موظف أو اثنان لكل إدارة، أسماؤهم «موظف تجريبي») مع تقارير بنصوص عامة — للعرض فقط.
 const base = (process.argv[2] || 'http://localhost:8080').replace(/\/$/, '');
 const withReports = process.argv.includes('--reports');
-const ORG_NAME = 'أسس الأمانة';
-const DEPS = [
-  ['إدارة ال IT', ['قسم IT']], ['إدارة التسويق', ['قسم التسويق']], ['إدارة المخازن', ['قسم المخازن']],
-  ['الإدارة المالية', ['الحسابات', 'المراجعة', 'قسم الصندوق', 'قسم المالية']], ['الشؤون الإدارية', ['قسم الشؤون الإدارية']],
-  ['المبيعات', ['الموزعين', 'قسم التفعيل', 'قسم المبيعات', 'مشواري']], ['مبيعات معرض حدة', ['قسم المبيعات']], // فرع: المعرض شارع حدة
-];
+import { readFileSync } from 'node:fs';
+// الملف الشخصي (profile) يفصل نسخة أسس عن النسخة المحايدة: --profile=asas | generic (الافتراضي generic حتى لا يتسرب هيكل أسس لجهة أخرى)
+const pf = (process.argv.find((a) => a.startsWith('--profile=')) || '--profile=generic').slice(10);
+const PROFILE = JSON.parse(readFileSync(new URL(`../profiles/${pf.replace(/[^a-z-]/g, '')}.json`, import.meta.url), 'utf8'));
+const ORG_NAME = PROFILE.org, DEPS = PROFILE.deps;
 const PASS = 'Demo-Pass-2026';
 const call = async (m, p, b, tok, org) => {
   const r = await fetch(base + p, { method: m, headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}), ...(org ? { 'x-org': org } : {}) }, body: b ? JSON.stringify(b) : undefined });
