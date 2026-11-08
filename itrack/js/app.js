@@ -31,7 +31,7 @@ const STATE = { done: 'أُنجز', progress: 'جارٍ', blocked: 'متعثّر
 const ROLE = { admin: 'مسؤول الجهة', manager: 'مدير', employee: 'موظف' };
 const ACTION = {
   'org.create': 'أنشأ الجهة', 'member.invite': 'دعا عضوًا', 'member.join': 'انضم إلى الجهة', 'member.update': 'عدّل بيانات عضو',
-  'department.create': 'أضاف إدارة', 'department.update': 'عدّل إدارة', 'position.create': 'أضاف وظيفة', 'position.update': 'عدّل توصيف وظيفة',
+  'section.create': 'أضاف قسمًا', 'section.update': 'عدّل قسمًا', 'department.create': 'أضاف إدارة', 'department.update': 'عدّل إدارة', 'position.create': 'أضاف وظيفة', 'position.update': 'عدّل توصيف وظيفة',
   'report.create': 'بدأ التقرير', 'report.submit': 'رفع التقرير', 'report.resubmit': 'أعاد رفع التقرير بعد التعديل',
   'report.approve': 'اعتمد التقرير', 'report.return': 'أعاد التقرير للتعديل', 'report.comment': 'أضاف ملاحظة',
 };
@@ -43,7 +43,7 @@ const S = {
   user: undefined, me: null, org: store.get('it:org'), boot: null, err: null,
   cache: new Map(), loading: new Set(),
   draft: {}, dirty: {}, saveState: {}, // تقريري قيد التحرير لكل يوم
-  f: { dep: '', st: '' }, edit: { member: null, pos: null, dep: null }, authTab: 'in',
+  f: { dep: '', st: '' }, edit: { member: null, pos: null, dep: null, sec: null }, authTab: 'in',
   codes: {}, // رموز الدعوة/إعادة التعيين الصادرة في هذه الجلسة (تُعرض مرة واحدة)
   info: {}, // قدرات الخادم
 };
@@ -73,6 +73,7 @@ const members = () => S.boot?.members || [];
 const memberById = (id) => members().find((m) => m.id === id);
 const posById = (id) => S.boot?.positions.find((p) => p.id === id);
 const depById = (id) => S.boot?.departments.find((d) => d.id === id);
+const secById = (id) => (S.boot?.sections || []).find((x) => x.id === id);
 const myRole = () => S.boot?.me.role;
 const isAdmin = () => myRole() === 'admin';
 const hasTeam = () => isAdmin() || (S.boot?.me.subs || []).length > 0;
@@ -405,12 +406,25 @@ function vTeam(d) {
     <div class="kpi"><b>${n(list.length - sent)}</b><span>لم يرفعوا</span></div>
     <div class="kpi${blocked ? ' hot' : ''}"><b>${n(blocked)}</b><span>بنود متعثّرة</span></div></div>`;
   const deps = S.boot.departments.filter((x) => x.active);
+  // ملخص كل إدارة: ما يحتاجه المدير العام ليعرف أين المشكلة دون فتح ٦٩ بطاقة
+  const roll = deps.map((x) => {
+    const ms = list.filter((m) => m.department_id === x.id); if (!ms.length) return null;
+    const sn = ms.filter((m) => ['submitted', 'approved', 'returned'].includes(stOf(m))).length;
+    return { x, total: ms.length, sn, wait: ms.filter((m) => stOf(m) === 'submitted').length, bl: ms.reduce((t, m) => t + (rows.get(m.id)?.blocked || 0), 0) };
+  }).filter(Boolean);
+  const rollup = day && !day.error && roll.length > 1 ? `<div class="rollup" role="group" aria-label="ملخص الإدارات">${roll.map((r) => {
+    const pct = Math.round((r.sn / r.total) * 100);
+    return `<button type="button" class="rcard" data-act="fdep-set" data-v="${esc(r.x.id)}" aria-pressed="${S.f.dep === r.x.id}">
+      <b>${esc(r.x.name)}</b><span class="rn">${n(r.sn)} / ${n(r.total)} رفعوا</span>
+      <i class="bar" aria-hidden="true"><u style="width:${pct}%"></u></i>
+      <span class="rm">${r.wait ? `<em>${n(r.wait)} بانتظار المراجعة</em>` : ''}${r.bl ? `<em class="hot">${n(r.bl)} متعثّر</em>` : ''}${!r.wait && !r.bl ? '<em>لا شيء معلّق</em>' : ''}</span></button>`;
+  }).join('')}</div>` : '';
   const fchip = (v, l) => `<button class="chip" data-act="fst" data-v="${v}" aria-pressed="${S.f.st === v}">${l}</button>`;
   const filters = `<div class="filters">${deps.length > 1 ? `<select class="in" data-act="fdep" aria-label="الإدارة"><option value="">كل الإدارات</option>${deps.map((x) => `<option value="${esc(x.id)}"${x.id === S.f.dep ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}
     ${fchip('', 'الكل')}${fchip('missing', 'لم يرفع')}${fchip('submitted', 'بانتظار المراجعة')}${fchip('approved', 'معتمد')}${fchip('returned', 'مُعاد')}${fchip('blocked', 'متعثّر')}</div>`;
   const person = (m) => {
     const r = rows.get(m.id); const st = stOf(m); const pos = posById(m.position_id);
-    return `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${d}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>${esc(pos?.title || ROLE[m.role])}${memberById(m.manager_id) && isAdmin() ? ` · يتبع ${esc(memberById(m.manager_id).name)}` : ''}</small></div>
+    return `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${d}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>${esc(pos?.title || ROLE[m.role])}${secById(m.section_id) ? ` · ${esc(secById(m.section_id).name)}` : ''}${memberById(m.manager_id) && isAdmin() ? ` · يتبع ${esc(memberById(m.manager_id).name)}` : ''}</small></div>
       <div class="nums">${r?.items ? `<span>${n(r.items)} بند</span>` : ''}${r?.minutes ? `<span>${mins(r.minutes)}</span>` : ''}${r?.blocked ? `<span class="tag blocked">${n(r.blocked)} متعثّر</span>` : ''}${r?.late ? '<span class="tag late">متأخر</span>' : ''}${m.status === 'invited' ? '<span class="tag out">لم ينضم بعد</span>' : ''}</div>${chip(st)}</a>`;
   };
   // تجميع حسب الإدارة
@@ -423,10 +437,10 @@ function vTeam(d) {
     : [...groups.entries()].map(([k, ms]) => `${groups.size > 1 ? `<p class="grp">${esc(depById(k)?.name || 'بلا إدارة')} · ${n(ms.length)}</p>` : ''}<div class="people">${ms.map(person).join('')}</div>`).join('');
   const ib = inbox();
   const queue = ib && !ib.error ? ib.review : [];
-  const qCard = queue.length ? `<div class="card queue"><h2>${I('hourglass')}بانتظار مراجعتك · ${n(queue.length)}</h2><div class="people">${queue.slice(0, 12).map((x) => { const m = memberById(x.member_id); return m ? `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${x.date}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>تقرير ${rel(x.date)}${x.submitted_at ? ` · رُفع ${fTime.format(new Date(x.submitted_at))}` : ''}</small></div>${x.late ? '<span class="tag late">متأخر</span>' : ''}${x.date < addD(today(), -2) ? '<span class="tag blocked">ينتظر منذ أيام</span>' : ''}</a>` : ''; }).join('')}</div>${queue.length > 12 ? `<p class="hint" style="margin-top:8px">و${n(queue.length - 12)} غيرها. ابدأ بالأقدم.</p>` : ''}</div>` : '';
-  return `<div class="wrap">${vh('الفريق', isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير')}${qCard}
+  const qCard = queue.length ? `<div class="card queue"><h2>${I('hourglass')}بانتظار مراجعتك · ${n(queue.length)}</h2><div class="people">${queue.slice(0, 5).map((x) => { const m = memberById(x.member_id); return m ? `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${x.date}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>تقرير ${rel(x.date)}${x.submitted_at ? ` · رُفع ${fTime.format(new Date(x.submitted_at))}` : ''}</small></div>${x.late ? '<span class="tag late">متأخر</span>' : ''}${x.date < addD(today(), -2) ? '<span class="tag blocked">ينتظر منذ أيام</span>' : ''}</a>` : ''; }).join('')}</div>${queue.length > 5 ? `<p class="hint" style="margin-top:8px">و${n(queue.length - 5)} غيرها. اختر إدارة من الملخص أعلاه أو صنّف «بانتظار المراجعة».</p>` : ''}</div>` : '';
+  return `<div class="wrap">${vh('الفريق', isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير')}
     ${dayBar('#/team', d, null).replace(/<ol class="strip"[\s\S]*<\/ol>/, '')}
-    ${list.length ? kpis : ''}<div class="card">${list.length ? filters : ''}${body}<p class="hint" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div></div>`;
+    ${list.length ? kpis : ''}${rollup}${qCard}<div class="card">${list.length ? filters : ''}${body}<p class="hint" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div></div>`;
 }
 
 /* ═════════════ صفحة موظف ═════════════ */
@@ -481,6 +495,7 @@ function memberForm(m) {
     <label class="fld"><span>الدور</span><select class="in" name="role">${Object.entries(ROLE).map(([k, l]) => opt(k, l, m?.role || 'employee')).join('')}</select></label>
     <label class="fld"><span>المدير المباشر</span><select class="in" name="manager_id"><option value="">— بلا مدير —</option>${mgrs.map((x) => opt(x.id, `${x.name} (${ROLE[x.role]})`, m ? m.manager_id : S.boot.me.id)).join('')}</select></label>
     <label class="fld"><span>الإدارة</span><select class="in" name="department_id"><option value="">—</option>${deps.map((x) => opt(x.id, x.name, m?.department_id)).join('')}</select></label>
+    <label class="fld"><span>القسم</span><select class="in" name="section_id"><option value="">—</option>${(S.boot.sections || []).filter((x) => x.active || x.id === m?.section_id).map((x) => opt(x.id, `${depById(x.department_id)?.name || ''} ‹ ${x.name}`, m?.section_id)).join('')}</select></label>
     <label class="fld"><span>الوظيفة (التوصيف)</span><select class="in" name="position_id"><option value="">—</option>${poss.map((x) => opt(x.id, x.title, m?.position_id)).join('')}</select></label>
     <div class="row full"><button class="btn primary" type="submit">${m ? 'حفظ' : `${I('plus')}إضافة ودعوة`}</button>${m ? `<button type="button" class="btn" data-act="edit-member" data-id="">إلغاء</button>
       <button type="button" class="btn ${m.status === 'disabled' ? '' : 'warn'}" data-act="toggle-member" data-id="${esc(m.id)}">${m.status === 'disabled' ? 'إعادة التفعيل' : 'تعطيل الحساب'}</button>` : ''}</div>
@@ -547,11 +562,19 @@ function orgPositions() {
 }
 function orgDeps() {
   const list = S.boot.departments;
+  const secs = S.boot.sections || [];
   const count = (id) => members().filter((m) => m.department_id === id && m.status !== 'disabled').length;
-  return `<div class="grid2"><div class="card"><h2>${I('people', 'd')}الإدارات</h2>
-    ${list.length ? `<div class="people">${list.map((x) => (S.edit.dep === x.id
+  const countS = (id) => members().filter((m) => m.section_id === id && m.status !== 'disabled').length;
+  const sec = (x) => (S.edit.sec === x.id
+    ? `<form class="person sub" data-form="sec" data-id="${esc(x.id)}"><input class="in grow" name="name" required maxlength="80" value="${esc(x.name)}" aria-label="اسم القسم" style="flex:1" /><button class="btn sm primary" type="submit">حفظ</button><button type="button" class="btn sm" data-act="edit-sec" data-id="">إلغاء</button></form>`
+    : `<div class="person sub${x.active ? '' : ' off'}"><div class="who"><b>${esc(x.name)}</b><small>${n(countS(x.id))} عضو${x.active ? '' : ' · معطّل'}</small></div><button class="btn sm" data-act="edit-sec" data-id="${esc(x.id)}">تسمية</button><button class="btn sm" data-act="toggle-sec" data-id="${esc(x.id)}">${x.active ? 'تعطيل' : 'تفعيل'}</button></div>`);
+  const dep = (x) => `<div class="depblock">${S.edit.dep === x.id
       ? `<form class="person" data-form="dep" data-id="${esc(x.id)}"><input class="in grow" name="name" required maxlength="80" value="${esc(x.name)}" aria-label="اسم الإدارة" style="flex:1" /><button class="btn sm primary" type="submit">حفظ</button><button type="button" class="btn sm" data-act="edit-dep" data-id="">إلغاء</button></form>`
-      : `<div class="person${x.active ? '' : ' off'}"><div class="who"><b>${esc(x.name)}</b><small>${n(count(x.id))} عضو${x.active ? '' : ' · معطّلة'}</small></div><button class="btn sm" data-act="edit-dep" data-id="${esc(x.id)}">تسمية</button><button class="btn sm" data-act="toggle-dep" data-id="${esc(x.id)}">${x.active ? 'تعطيل' : 'تفعيل'}</button></div>`)).join('')}</div>` : '<div class="empty"><p>لا إدارات بعد.</p></div>'}</div>
+      : `<div class="person${x.active ? '' : ' off'}"><div class="who"><b>${esc(x.name)}</b><small>${n(count(x.id))} عضو · ${n(secs.filter((q) => q.department_id === x.id).length)} قسم${x.active ? '' : ' · معطّلة'}</small></div><button class="btn sm" data-act="edit-dep" data-id="${esc(x.id)}">تسمية</button><button class="btn sm" data-act="toggle-dep" data-id="${esc(x.id)}">${x.active ? 'تعطيل' : 'تفعيل'}</button></div>`}
+    ${secs.filter((q) => q.department_id === x.id).map(sec).join('')}
+    <form class="row subadd" data-form="sec" data-id="" data-dep="${esc(x.id)}"><input class="in grow" name="name" required maxlength="80" placeholder="قسم جديد في ${esc(x.name)}" aria-label="قسم جديد في ${esc(x.name)}" /><button class="btn sm" type="submit">${I('plus')}قسم</button></form></div>`;
+  return `<div class="grid2"><div class="card"><h2>${I('people', 'd')}الإدارات والأقسام</h2>
+    ${list.length ? `<div class="people">${list.map(dep).join('')}</div>` : '<div class="empty"><p>لا إدارات بعد.</p></div>'}</div>
     <div class="card"><h2>${I('plus')}إدارة جديدة</h2><form class="row" data-form="dep" data-id=""><input class="in grow" name="name" required maxlength="80" placeholder="مثال: اللوجستيات" aria-label="اسم الإدارة" /><button class="btn primary" type="submit">إضافة</button></form></div></div>`;
 }
 
@@ -593,6 +616,7 @@ document.addEventListener('click', async (e) => {
   const act = el.dataset.act;
   const d = curDay();
   switch (act) {
+    case 'fdep-set': S.f.dep = S.f.dep === el.dataset.v ? '' : el.dataset.v; render(); break;
     case 'auth-tab': S.authTab = el.dataset.v; render(); break;
     case 'reset': S.authTab = 'code'; render(); toast('اطلب من مسؤول جهتك «رمز إعادة تعيين» ثم أدخله هنا.'); break;
     case 'skip-code': S.prefCode = ''; S.me = { ...S.me, orgs: S.me.orgs.filter((o) => !o.invited) }; render(); break;
@@ -634,6 +658,8 @@ document.addEventListener('click', async (e) => {
     case 'resp-del': el.closest('.resp-row').remove(); break;
     case 'resp-up': { const row = el.closest('.resp-row'); if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); break; }
     case 'edit-dep': S.edit.dep = el.dataset.id || null; render(); break;
+    case 'edit-sec': S.edit.sec = el.dataset.id || null; render(); break;
+    case 'toggle-sec': { const x = secById(el.dataset.id); if (x) mutate(() => call('PATCH', `/api/sections/${x.id}`, { active: !x.active }), 'حُفظ.'); break; }
     case 'toggle-dep': { const x = depById(el.dataset.id); if (x) mutate(() => call('PATCH', `/api/departments/${x.id}`, { active: !x.active }), 'حُفظ.'); break; }
     default:
   }
@@ -726,7 +752,7 @@ document.addEventListener('submit', async (e) => {
     }
     case 'member': {
       const id = form.dataset.id;
-      const body = { name: get('name'), role: get('role'), manager_id: get('manager_id') || null, department_id: get('department_id') || null, position_id: get('position_id') || null };
+      const body = { name: get('name'), role: get('role'), manager_id: get('manager_id') || null, department_id: get('department_id') || null, section_id: get('section_id') || null, position_id: get('position_id') || null };
       if (!id) body.email = get('email');
       const ok = await mutate(() => (id ? call('PATCH', `/api/members/${id}`, body) : call('POST', '/api/members', body)), id ? 'حُفظ.' : 'أُضيف. انسخ رسالة الدعوة وأرسلها له.');
       if (ok) { if (!id) { form.reset(); S.edit.member = ok.id; if (ok.code) S.codes[ok.id] = ok; } else S.edit.member = null; render(); }
@@ -738,6 +764,12 @@ document.addEventListener('submit', async (e) => {
       const body = { title: get('title'), department_id: get('department_id') || null, summary: get('summary'), responsibilities: rts.map((t, i) => ({ id: rids[i] || undefined, title: String(t).trim(), detail: String(rds[i] || '').trim() })).filter((r) => r.title) };
       const ok = await mutate(() => (id ? call('PUT', `/api/positions/${id}`, body) : call('POST', '/api/positions', body)), 'حُفظ التوصيف.');
       if (ok) { S.edit.pos = null; render(); }
+      break;
+    }
+    case 'sec': {
+      const id = form.dataset.id;
+      const ok = await mutate(() => (id ? call('PATCH', `/api/sections/${id}`, { name: get('name') }) : call('POST', '/api/sections', { name: get('name'), department_id: form.dataset.dep })), 'حُفظ.');
+      if (ok) { S.edit.sec = null; if (!id) form.reset(); render(); }
       break;
     }
     case 'dep': {

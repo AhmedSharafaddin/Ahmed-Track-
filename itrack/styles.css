@@ -254,3 +254,22 @@ a.person:hover { background: var(--hover); }
 .tabbar a em { position: absolute; top: 2px; inset-inline-end: calc(50% - 22px); font-style: normal; font-size: .68rem; line-height: 1; padding: 3px 6px; border-radius: 999px; background: var(--hot); color: var(--on-hot); font-weight: 700; }
 .queue { border-inline-start: 4px solid var(--hot); }
 .queue .person { text-decoration: none; }
+
+/* ملخص الإدارات في «الفريق» */
+.rollup{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin:0 0 16px}
+.rcard{display:flex;flex-direction:column;gap:8px;text-align:start;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);font:inherit;cursor:pointer;min-height:44px}
+.rcard:hover{border-color:var(--accent)}
+.rcard[aria-pressed=true]{outline:2px solid var(--accent);outline-offset:1px}
+.rcard b{font-size:1rem}
+.rcard .rn{font-size:.9rem;color:var(--muted)}
+.rcard .bar{display:block;height:8px;border-radius:99px;background:color-mix(in srgb,var(--ink) 12%,transparent);overflow:hidden}
+.rcard .bar u{display:block;height:100%;background:var(--accent);border-radius:99px}
+.rcard .rm{display:flex;flex-wrap:wrap;gap:6px;font-size:.85rem}
+.rcard .rm em{font-style:normal;padding:2px 8px;border-radius:99px;background:color-mix(in srgb,var(--ink) 8%,transparent)}
+.rcard .rm em.hot{background:#fde4e0;color:#8a1c0f;font-weight:600}
+
+/* الأقسام تحت الإدارة */
+.depblock{display:grid;gap:6px;padding:8px 0;border-bottom:1px solid var(--line)}
+.depblock:last-child{border-bottom:0}
+.person.sub{margin-inline-start:20px;background:var(--surface-2)}
+.subadd{margin-inline-start:20px}

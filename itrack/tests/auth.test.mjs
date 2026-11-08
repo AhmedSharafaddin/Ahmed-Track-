@@ -139,5 +139,22 @@ const bInC = r.data.id;
 await c2(null, 'POST', '/api/auth/code', { email: 'b@x.test', code: r.data.code, password: 'pass-bbbb-1' });
 ok('cross-org: reset blocked for multi-org account', (await c2(c, 'POST', `/api/members/${bInC}/code`, {}, ORG3)).data.error === 'multi-org');
 
+/* ───── الأقسام ───── */
+const dep = (await c2(a, 'POST', '/api/departments', { name: 'المبيعات' }, ORG2)).data.id;
+const dep2 = (await c2(a, 'POST', '/api/departments', { name: 'المالية' }, ORG2)).data.id;
+r = await c2(a, 'POST', '/api/sections', { name: 'الموزعين', department_id: dep }, ORG2);
+ok('section: admin creates', r.status === 200 && r.data.id, r.data);
+const sec = r.data.id;
+ok('section: bad department rejected', (await c2(a, 'POST', '/api/sections', { name: 'x', department_id: 'nope' }, ORG2)).status === 400);
+ok('section: employee cannot create', (await c2(b, 'POST', '/api/sections', { name: 'x', department_id: dep }, ORG2)).status === 403);
+ok('section: member must match department', (await c2(a, 'POST', '/api/members', { email: 'z@x.test', name: 'Z', role: 'employee', department_id: dep2, section_id: sec }, ORG2)).data.error === 'invalid');
+r = await c2(a, 'POST', '/api/members', { email: 'z@x.test', name: 'Z', role: 'employee', department_id: dep, section_id: sec }, ORG2);
+ok('section: member saved with section', r.status === 200, r.data);
+r = await c2(a, 'GET', '/api/bootstrap', null, ORG2);
+ok('section: in bootstrap + member field', r.data.sections.some((x) => x.id === sec && x.department_id === dep) && r.data.members.find((m) => m.email === 'z@x.test').section_id === sec, r.data.sections);
+ok('section: rename + disable', (await c2(a, 'PATCH', `/api/sections/${sec}`, { name: 'الموزعون', active: false }, ORG2)).data.ok === true);
+ok('section: other org cannot touch it', (await c2(c, 'PATCH', `/api/sections/${sec}`, { name: 'x' }, ORG3)).status === 404);
+ok('section: audited', (await env2.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE entity = 'section'").first()).n === 2);
+
 console.log(`\n${pass} pass, ${failN} fail`);
 if (failN) process.exit(1);

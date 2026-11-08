@@ -89,6 +89,13 @@ const MIGRATIONS = [
     'CREATE TABLE IF NOT EXISTS throttle (k TEXT PRIMARY KEY, n INTEGER NOT NULL, until INTEGER NOT NULL)',
     'CREATE TABLE IF NOT EXISTS ai_use (k TEXT PRIMARY KEY, n INTEGER NOT NULL)',
   ],
+  [
+    // الأقسام: مستوى بين الإدارة والموظف (إدارة المبيعات ← قسم الموزعين). اختياري للعضو.
+    `CREATE TABLE IF NOT EXISTS sections (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, department_id TEXT NOT NULL, name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS sec_org ON sections(org_id, department_id)',
+    'ALTER TABLE members ADD COLUMN section_id TEXT',
+  ],
 ];
 
 const migrated = new WeakSet(); // لكل قاعدة على حدة؛ وعلى Cloudflare ربط واحد فقط فتكفي مرة لكل نسخة
@@ -264,8 +271,8 @@ function auditQ(db, orgId, actorId, action, entity, entityId, subjectId, data = 
 
 /* ═════════════ تحويل الصفوف للواجهة ═════════════ */
 const pubMember = (m, full) => (full
-  ? { id: m.id, email: m.email, name: m.name, role: m.role, department_id: m.department_id, position_id: m.position_id, manager_id: m.manager_id, status: m.status, joined: !!m.uid }
-  : { id: m.id, name: m.name, role: m.role, department_id: m.department_id, position_id: m.position_id }); // المدير المباشر: الاسم فقط
+  ? { id: m.id, email: m.email, name: m.name, role: m.role, department_id: m.department_id, section_id: m.section_id, position_id: m.position_id, manager_id: m.manager_id, status: m.status, joined: !!m.uid }
+  : { id: m.id, name: m.name, role: m.role, department_id: m.department_id, section_id: m.section_id, position_id: m.position_id }); // المدير المباشر: الاسم فقط
 const pubReport = (r) => r && ({ id: r.id, member_id: r.member_id, date: r.date, status: r.status, note: r.note, late: !!r.late, submitted_at: r.submitted_at, reviewed_by: r.reviewed_by, reviewed_at: r.reviewed_at, review_comment: r.review_comment, updated_at: r.updated_at });
 const pubItem = (i) => ({ id: i.id, text: i.text, responsibility_id: i.responsibility_id, minutes: i.minutes, state: i.state, blocker: i.blocker });
 
@@ -379,11 +386,12 @@ route('POST', '/api/orgs', async ({ db, env, user, body }) => {
 /** كل ما تحتاجه الواجهة عند الفتح، مقيّدًا بما يحق لي رؤيته. */
 route('GET', '/api/bootstrap', async ({ db, v }) => {
   const org = await db.prepare('SELECT id, name FROM orgs WHERE id = ?').bind(v.org_id).first();
-  const [mem, deps, pos, resp] = await db.batch([
+  const [mem, deps, pos, resp, secs] = await db.batch([
     db.prepare('SELECT * FROM members WHERE org_id = ? ORDER BY name').bind(v.org_id),
     db.prepare('SELECT id, name, active FROM departments WHERE org_id = ? ORDER BY name').bind(v.org_id),
     db.prepare('SELECT id, title, department_id, summary, version, active FROM positions WHERE org_id = ? ORDER BY title').bind(v.org_id),
     db.prepare('SELECT id, position_id, title, detail, sort, active FROM responsibilities WHERE org_id = ? ORDER BY sort').bind(v.org_id),
+    db.prepare('SELECT id, department_id, name, active FROM sections WHERE org_id = ? ORDER BY name').bind(v.org_id),
   ]);
   const all = mem.results;
   const visible = all.filter((m) => canSee(v, m.id)).map((m) => pubMember(m, true));
@@ -397,6 +405,7 @@ route('GET', '/api/bootstrap', async ({ db, v }) => {
     org, me: { ...pubMember(v, true), subs: [...v.subs] },
     members: visible,
     departments: deps.results,
+    sections: secs.results,
     positions: pos.results.filter((p) => posIds.has(p.id)).map((p) => ({ ...p, responsibilities: resp.results.filter((r) => r.position_id === p.id) })),
   };
 });
@@ -421,6 +430,30 @@ route('PATCH', '/api/departments/:id', async ({ db, v, body, p }) => {
   await db.batch([
     db.prepare('UPDATE departments SET name = ?, active = ? WHERE id = ?').bind(name, active, d.id),
     auditQ(db, v.org_id, v.id, 'department.update', 'department', d.id, null, { from: { name: d.name, active: d.active }, to: { name, active } }),
+  ]);
+  return { ok: true };
+});
+
+route('POST', '/api/sections', async ({ db, v, body }) => {
+  needAdmin(v);
+  const name = text(body.name, 80, { required: true, label: 'اسم القسم' });
+  if (!(await db.prepare('SELECT 1 FROM departments WHERE id = ? AND org_id = ?').bind(body.department_id, v.org_id).first())) fail(400, 'invalid', 'الإدارة غير صحيحة.');
+  const sid = id();
+  await db.batch([
+    db.prepare('INSERT INTO sections (id, org_id, department_id, name, created_at) VALUES (?, ?, ?, ?, ?)').bind(sid, v.org_id, body.department_id, name, now()),
+    auditQ(db, v.org_id, v.id, 'section.create', 'section', sid, null, { name, department_id: body.department_id }),
+  ]);
+  return { id: sid };
+});
+route('PATCH', '/api/sections/:id', async ({ db, v, body, p }) => {
+  needAdmin(v);
+  const x = await db.prepare('SELECT * FROM sections WHERE id = ? AND org_id = ?').bind(p.id, v.org_id).first();
+  if (!x) fail(404, 'not-found', 'القسم غير موجود.');
+  const name = body.name !== undefined ? text(body.name, 80, { required: true, label: 'اسم القسم' }) : x.name;
+  const active = body.active !== undefined ? (body.active ? 1 : 0) : x.active;
+  await db.batch([
+    db.prepare('UPDATE sections SET name = ?, active = ? WHERE id = ?').bind(name, active, x.id),
+    auditQ(db, v.org_id, v.id, 'section.update', 'section', x.id, null, { from: { name: x.name, active: x.active }, to: { name, active } }),
   ]);
   return { ok: true };
 });
@@ -475,6 +508,11 @@ route('PUT', '/api/positions/:id', async ({ db, v, body, p }) => {
 /* ───── الأعضاء (المسؤول) ───── */
 async function checkRefs(db, v, f, selfId) {
   if (f.department_id && !(await db.prepare('SELECT 1 FROM departments WHERE id = ? AND org_id = ?').bind(f.department_id, v.org_id).first())) fail(400, 'invalid', 'الإدارة غير صحيحة.');
+  if (f.section_id) {
+    const sec = await db.prepare('SELECT department_id FROM sections WHERE id = ? AND org_id = ?').bind(f.section_id, v.org_id).first();
+    if (!sec) fail(400, 'invalid', 'القسم غير صحيح.');
+    if (f.department_id && sec.department_id !== f.department_id) fail(400, 'invalid', 'القسم لا يتبع هذه الإدارة.');
+  }
   if (f.position_id && !(await db.prepare('SELECT 1 FROM positions WHERE id = ? AND org_id = ?').bind(f.position_id, v.org_id).first())) fail(400, 'invalid', 'الوظيفة غير صحيحة.');
   if (f.manager_id) {
     if (f.manager_id === selfId) fail(400, 'invalid', 'لا يكون الموظف مدير نفسه.');
@@ -486,6 +524,7 @@ const memberFields = (body) => ({
   name: text(body.name, 60, { required: true, label: 'الاسم' }),
   role: ROLES.includes(body.role) ? body.role : 'employee',
   department_id: body.department_id || null,
+  section_id: body.section_id || null,
   position_id: body.position_id || null,
   manager_id: body.manager_id || null,
 });
@@ -500,8 +539,8 @@ route('POST', '/api/members', async ({ db, v, body }) => {
   if (count.n >= 300) fail(429, 'limit', 'الحد ٣٠٠ عضو للجهة في النسخة التجريبية.');
   const mid = id(); const t = now();
   await db.batch([
-    db.prepare("INSERT INTO members (id, org_id, email, name, role, department_id, position_id, manager_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'invited', ?, ?)")
-      .bind(mid, v.org_id, email, f.name, f.role, f.department_id, f.position_id, f.manager_id, t, t),
+    db.prepare("INSERT INTO members (id, org_id, email, name, role, department_id, section_id, position_id, manager_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'invited', ?, ?)")
+      .bind(mid, v.org_id, email, f.name, f.role, f.department_id, f.section_id, f.position_id, f.manager_id, t, t),
     auditQ(db, v.org_id, v.id, 'member.invite', 'member', mid, mid, { email, ...f }),
   ]);
   return { id: mid, ...(await issueCode(db, v, { id: mid, email, uid: null, status: 'invited' })) };
@@ -543,12 +582,12 @@ route('PATCH', '/api/members/:id', async ({ db, v, body, p }) => {
     if (admins.n <= 1) fail(400, 'last-admin', 'لا بد من مسؤول واحد نشط على الأقل.');
   }
   const diff = {};
-  for (const k of ['name', 'role', 'department_id', 'position_id', 'manager_id']) if (m[k] !== f[k]) diff[k] = [m[k], f[k]];
+  for (const k of ['name', 'role', 'department_id', 'section_id', 'position_id', 'manager_id']) if (m[k] !== f[k]) diff[k] = [m[k], f[k]];
   if (m.status !== status) diff.status = [m.status, status];
   if (!Object.keys(diff).length) return { ok: true };
   await db.batch([
-    db.prepare('UPDATE members SET name = ?, role = ?, department_id = ?, position_id = ?, manager_id = ?, status = ?, updated_at = ? WHERE id = ?')
-      .bind(f.name, f.role, f.department_id, f.position_id, f.manager_id, status, now(), m.id),
+    db.prepare('UPDATE members SET name = ?, role = ?, department_id = ?, section_id = ?, position_id = ?, manager_id = ?, status = ?, updated_at = ? WHERE id = ?')
+      .bind(f.name, f.role, f.department_id, f.section_id, f.position_id, f.manager_id, status, now(), m.id),
     auditQ(db, v.org_id, v.id, 'member.update', 'member', m.id, m.id, diff),
   ]);
   return { ok: true };
