@@ -542,6 +542,7 @@ const fireFmt = new Intl.DateTimeFormat('ar-u-nu-latn', { weekday: 'short', hour
 const WHO = (t) => (t.asg.kind === 'duty' ? `واجب ${FREQ_AR[t.asg.freq] || ''}` : `من ${t.asg.byName || 'مديرك'}`);
 function workChips(t, done) {
   const c = [`<span class="m m-work">${I('people')}${esc(WHO(t))}</span>`];
+  if (t.asg.projectName) c.push(`<span class="m m-work">${I('grid')}${esc(t.asg.projectName)}</span>`);
   if (t.rv?.state === 'pending') c.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
   else if (t.rv?.state === 'returned' && !done) c.push(`<span class="m late">${I('back')}مُعادة: ${esc((t.rv.note || '').slice(0, 40))}</span>`);
   else if (t.rv?.state === 'ok') c.push(`<span class="m m-ok">${I('check')}معتمدة</span>`);
@@ -562,7 +563,7 @@ function workBlock(t, done) {
   const comments = (th?.comments || []).map((c) => `<li><b>${esc(c.author || '—')}</b><time>${fmtDate(new Date(c.at).toISOString().slice(0, 10))}</time><p>${esc(c.body)}</p></li>`).join('');
   return `<section class="pblk work" aria-label="تنفيذ المهمة">
     <div class="wk-h">${I('people', 'd')}<span><b>${a.kind === 'duty' ? `واجب ${FREQ_AR[a.freq] || ''} من توصيفك الوظيفي` : `أسندها ${esc(a.byName || 'مديرك')}`}</b>
-      <small>${[a.kind === 'assign' && a.at ? `في ${fmtDate(new Date(a.at).toISOString().slice(0, 10))}` : '', a.review ? 'تحتاج اعتماده' : '', a.photo ? 'تتطلب صورة إنجاز' : '', `${I('hand')}العنوان والموعد والأولوية يحددها ${a.kind === 'duty' ? 'التوصيف' : 'هو'}`].filter(Boolean).join(' · ')}</small></span></div>
+      <small>${[a.projectName ? `المشروع: ${esc(a.projectName)}` : '', a.kind === 'assign' && a.at ? `في ${fmtDate(new Date(a.at).toISOString().slice(0, 10))}` : '', a.review ? 'تحتاج اعتماده' : '', a.photo ? 'تتطلب صورة إنجاز' : '', `${I('hand')}العنوان والموعد والأولوية يحددها ${a.kind === 'duty' ? 'التوصيف' : 'هو'}`].filter(Boolean).join(' · ')}</small></span></div>
     ${a.desc ? `<p class="wk-desc">${esc(a.desc)}</p>` : ''}
     ${rvNote}
     ${t.warn === 'photo' && !done ? `<div class="wk-n warn" role="alert"><b>أرفق صورة الإنجاز أولًا، ثم علّمها منجزة.</b></div>` : ''}

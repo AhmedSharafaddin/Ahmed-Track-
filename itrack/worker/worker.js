@@ -119,6 +119,12 @@ const MIGRATIONS = [
     'CREATE TABLE IF NOT EXISTS feeds (th TEXT PRIMARY KEY, org_id TEXT NOT NULL, member_id TEXT NOT NULL, created_at INTEGER NOT NULL)',
     'CREATE INDEX IF NOT EXISTS feeds_mem ON feeds(member_id)',
   ],
+  [
+    // المشاريع: وعاء للمهام المسندة (المهمة تنتمي لمشروع عبر asg.project). لا حذف: الأرشفة فقط ⇒ قابلة للتراجع.
+    `CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL, descr TEXT NOT NULL DEFAULT '',
+      owner_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', due TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS proj_org ON projects(org_id, status)',
+  ],
 ];
 
 const migrated = new WeakSet(); // لكل قاعدة على حدة؛ وعلى Cloudflare ربط واحد فقط فتكفي مرة لكل نسخة
@@ -1161,6 +1167,7 @@ route('POST', '/api/assign', async (ctx) => {
   const { results: ms } = await db.prepare('SELECT id, name, status FROM members WHERE org_id = ? AND id IN (SELECT value FROM json_each(?))').bind(v.org_id, JSON.stringify(to)).all();
   if (ms.length !== to.length || ms.some((m) => m.status === 'disabled')) fail(400, 'invalid', 'موظف غير صحيح أو معطّل.');
   const f = asgFields(body);
+  const proj = body.project ? await projectFor(ctx, body.project) : null;
   const steps = (Array.isArray(body.steps) ? body.steps : []).map((s) => text(s, 160)).filter(Boolean).slice(0, 12);
   const t = now(); const group = id();
   const rows = ms.map((m) => {
@@ -1168,7 +1175,7 @@ route('POST', '/api/assign', async (ctx) => {
     return { m: m.id, id: tid, name: m.name, d: JSON.stringify(baseTask({
       title: f.title, due: f.due, time: f.time, est: f.est, ...fromPrio(f.prio),
       steps: steps.map((s) => ({ id: id().slice(0, 8), title: s, done: false })),
-      asg: { kind: 'assign', by: v.id, byName: v.name, at: t, desc: f.desc, review: f.review, photo: f.photo, group, n: ms.length },
+      asg: { kind: 'assign', by: v.id, byName: v.name, at: t, desc: f.desc, review: f.review, photo: f.photo, group, n: ms.length, ...(proj ? { project: proj.id, projectName: proj.name } : {}) },
     })) };
   });
   const set = await getSet(ctx);
@@ -1189,7 +1196,14 @@ route('PATCH', '/api/assign/:owner/:tid', async (ctx) => {
   if (t.asg.kind !== 'assign') fail(400, 'invalid', 'الواجب الدوري يُعدَّل من التوصيف الوظيفي.');
   const f = asgFields(body, t);
   const next = { ...t, title: f.title, due: f.due, time: f.time, est: f.est, ...fromPrio(f.prio), asg: { ...t.asg, desc: f.desc, review: f.review, photo: f.photo } };
+  if (body.project !== undefined) {
+    const pr = body.project ? await projectFor(ctx, body.project) : null;
+    const a = { ...next.asg }; delete a.project; delete a.projectName;
+    if (pr) { a.project = pr.id; a.projectName = pr.name; }
+    next.asg = a;
+  }
   const diff = {};
+  if ((t.asg.project || null) !== (next.asg.project || null)) diff.project = [t.asg.projectName || null, next.asg.projectName || null];
   for (const k of ['title', 'due', 'time', 'est']) if ((t[k] ?? null) !== (next[k] ?? null)) diff[k] = [t[k] ?? null, next[k] ?? null];
   if (prioOf(t) !== f.prio) diff.prio = [prioOf(t), f.prio];
   for (const k of ['desc', 'review', 'photo']) if ((t.asg[k] ?? '') !== (next.asg[k] ?? '')) diff[k] = [t.asg[k] ?? null, next.asg[k]];
@@ -1253,6 +1267,110 @@ route('GET', '/api/assigned', async (ctx) => {
   const { results: cc } = await ctx.db.prepare('SELECT owner_id, task_id, COUNT(*) AS n FROM comments WHERE org_id = ? GROUP BY owner_id, task_id').bind(ctx.v.org_id).all();
   const cmap = new Map(cc.map((r) => [tref(r.owner_id, r.task_id), r.n]));
   return { today: orgToday(set), tasks: list.slice(0, 3000).map((x) => ({ ...pubTask(x), comments: cmap.get(tref(x.member_id, x.id)) || 0 })) };
+}, { api: true });
+
+/* ═════════════ المشاريع ═════════════
+   المشروع وعاء للمهام المسندة: اسم وهدف وموعد ومسؤول. المهمة تنتمي لمشروع واحد عبر asg.project (مقفولة على الموظف كبقية asg).
+   ما يراه كل شخص: المسؤول كل شيء، والمدير ما يتبعه من مهام، والموظف مهامه هو فقط. فالنسب تُحسب على المرئي ويُعلن ذلك في الواجهة.
+   من يُنشئ: المسؤول أو المدير. من يعدّل أو يؤرشف: صاحب المشروع أو المسؤول. من يُسند داخله: أي مدير (لمن يتبعه فقط، كالإسناد العادي). */
+const PSTAT = ['active', 'done', 'archived'];
+const needMgr = (v) => { if (v.role === 'employee') fail(403, 'forbidden', 'إدارة المشاريع للمدير والمسؤول.'); };
+async function projectFor(ctx, pid) {
+  const pr = typeof pid === 'string' ? await ctx.db.prepare('SELECT * FROM projects WHERE id = ? AND org_id = ?').bind(pid, ctx.v.org_id).first() : null;
+  if (!pr) fail(400, 'invalid', 'المشروع غير موجود.');
+  if (pr.status !== 'active') fail(400, 'invalid', 'المشروع مغلق أو مؤرشف؛ أعد تفعيله أولًا.');
+  return pr;
+}
+async function projTasks(ctx, pid) {
+  const { db, v } = ctx;
+  const { results } = pid
+    ? await db.prepare("SELECT p.member_id, p.id, p.data, p.updated_at FROM pdocs p JOIN members m ON m.id = p.member_id WHERE m.org_id = ? AND p.col = 'tasks' AND p.id LIKE 'a.%' AND json_extract(p.data, '$.asg.project') = ? LIMIT 3000").bind(v.org_id, pid).all()
+    : await db.prepare("SELECT p.member_id, p.id, p.data, p.updated_at FROM pdocs p JOIN members m ON m.id = p.member_id WHERE m.org_id = ? AND p.col = 'tasks' AND p.id LIKE 'a.%' AND json_extract(p.data, '$.asg.project') IS NOT NULL LIMIT 8000").bind(v.org_id).all();
+  return results.filter((r) => canSee(v, r.member_id)).map((r) => ({ member_id: r.member_id, id: r.id, updated_at: r.updated_at, ...JSON.parse(r.data) }));
+}
+/** نسبة الإنجاز موزونة بالأولوية (حرجة ٣، مهمة ٢، عادية ١): المنجز ١٠٠٪ والمفتوح بنسبته المعلنة (حتى ٩٩٪). */
+function projStats(list, today) {
+  const s = { total: list.length, done: 0, open: 0, overdue: 0, blocked: 0, review: 0, pct: 0, next: null, health: 'empty' };
+  let w = 0, got = 0;
+  for (const x of list) {
+    const wt = prioOf(x); w += wt;
+    if (isDone(x)) { s.done++; got += wt * 100; if (x.asg?.review && x.rv?.state !== 'ok') s.review++; continue; }
+    got += wt * Math.min(99, Math.max(0, x.prog || 0)); s.open++;
+    if (x.due && x.due < today) s.overdue++;
+    if (x.blocked) s.blocked++;
+    if (x.due && (!s.next || x.due < s.next)) s.next = x.due;
+  }
+  s.pct = w ? Math.round(got / w) : 0;
+  s.health = !s.total ? 'empty' : s.done === s.total ? 'done' : s.overdue ? 'late' : s.blocked ? 'blocked' : 'ok';
+  return s;
+}
+const pubProj = (p, ownerName) => ({ id: p.id, name: p.name, descr: p.descr, owner_id: p.owner_id, owner: ownerName || null, status: p.status, due: p.due || null, created_at: p.created_at });
+const projFields = (b, old = null) => {
+  const has = (k) => b[k] !== undefined;
+  let due = old ? old.due ?? null : null;
+  if (has('due')) { if (b.due === null || b.due === '') due = null; else if (isDay(b.due)) due = b.due; else fail(400, 'invalid', 'الموعد غير صحيح.'); }
+  const status = has('status') ? (PSTAT.includes(b.status) ? b.status : fail(400, 'invalid', 'حالة غير معروفة.')) : old?.status || 'active';
+  return { name: has('name') || !old ? text(b.name, 80, { required: true, label: 'اسم المشروع' }) : old.name, descr: has('descr') ? text(b.descr, 1000) : old?.descr || '', due, status };
+};
+route('GET', '/api/projects', async (ctx) => {
+  const { db, v, q } = ctx;
+  const set = await getSet(ctx); const today = orgToday(set);
+  const { results: ps } = await db.prepare('SELECT p.*, m.name AS owner_name FROM projects p LEFT JOIN members m ON m.id = p.owner_id WHERE p.org_id = ? ORDER BY p.created_at DESC LIMIT 500').bind(v.org_id).all();
+  const tasks = await projTasks(ctx, null);
+  const by = new Map(); for (const x of tasks) { const k = x.asg.project; (by.get(k) || by.set(k, []).get(k)).push(x); }
+  const want = q.get('status') || 'active';
+  const list = ps.filter((p) => (want === 'all' || p.status === want) && (v.isAdmin || p.owner_id === v.id || by.has(p.id)))
+    .map((p) => ({ ...pubProj(p, p.owner_name), stats: projStats(by.get(p.id) || [], today), mine: p.owner_id === v.id }));
+  return { today, projects: list, can_create: v.role !== 'employee', scope: v.isAdmin ? 'all' : v.subs.size ? 'branch' : 'own' };
+}, { api: true });
+route('POST', '/api/projects', async (ctx) => {
+  const { db, v, body } = ctx;
+  needMgr(v);
+  const f = projFields(body);
+  const pid = id(); const t = now();
+  await db.batch([
+    db.prepare('INSERT INTO projects (id, org_id, name, descr, owner_id, status, due, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(pid, v.org_id, f.name, f.descr, v.id, 'active', f.due, t, t),
+    auditQ(db, v.org_id, v.id, 'project.create', 'project', pid, null, { name: f.name, due: f.due }),
+  ]);
+  return { id: pid };
+}, { api: true });
+route('GET', '/api/projects/:id', async (ctx) => {
+  const { db, v, p } = ctx;
+  const pr = await db.prepare('SELECT p.*, m.name AS owner_name FROM projects p LEFT JOIN members m ON m.id = p.owner_id WHERE p.id = ? AND p.org_id = ?').bind(p.id, v.org_id).first();
+  const tasks = pr ? await projTasks(ctx, p.id) : [];
+  if (!pr || !(v.isAdmin || pr.owner_id === v.id || tasks.length)) fail(404, 'not-found', 'المشروع غير موجود.');
+  const set = await getSet(ctx); const today = orgToday(set);
+  const { results: mem } = await db.prepare('SELECT id, name FROM members WHERE org_id = ?').bind(v.org_id).all();
+  const nm = new Map(mem.map((m) => [m.id, m.name]));
+  const per = new Map(); for (const x of tasks) (per.get(x.member_id) || per.set(x.member_id, []).get(x.member_id)).push(x);
+  const { results: cc } = await db.prepare('SELECT owner_id, task_id, COUNT(*) AS n FROM comments WHERE org_id = ? GROUP BY owner_id, task_id').bind(v.org_id).all();
+  const cmap = new Map(cc.map((r) => [tref(r.owner_id, r.task_id), r.n]));
+  return {
+    today, project: pubProj(pr, pr.owner_name), stats: projStats(tasks, today),
+    members: [...per].map(([mid, l]) => ({ member_id: mid, name: nm.get(mid) || '—', ...projStats(l, today) })).sort((a, b) => a.pct - b.pct),
+    tasks: tasks.slice(0, 1500).map((x) => ({ ...pubTask(x), member: nm.get(x.member_id) || '—', comments: cmap.get(tref(x.member_id, x.id)) || 0 })),
+    can_edit: v.isAdmin || pr.owner_id === v.id, can_assign: pr.status === 'active' && v.role !== 'employee',
+    scope: v.isAdmin ? 'all' : v.subs.size ? 'branch' : 'own',
+  };
+}, { api: true });
+route('PATCH', '/api/projects/:id', async (ctx) => {
+  const { db, v, p, body } = ctx;
+  const pr = await db.prepare('SELECT * FROM projects WHERE id = ? AND org_id = ?').bind(p.id, v.org_id).first();
+  if (!pr) fail(404, 'not-found', 'المشروع غير موجود.');
+  if (!(v.isAdmin || pr.owner_id === v.id)) fail(403, 'forbidden', 'يعدّل المشروع صاحبه أو المسؤول.');
+  const f = projFields(body, pr);
+  const diff = {};
+  for (const k of ['name', 'descr', 'due', 'status']) if ((pr[k] ?? null) !== (f[k] ?? null)) diff[k] = [pr[k] ?? null, f[k] ?? null];
+  if (!Object.keys(diff).length) return { ok: true };
+  const t = now();
+  const stmts = [
+    db.prepare('UPDATE projects SET name = ?, descr = ?, due = ?, status = ?, updated_at = ? WHERE id = ? AND org_id = ?').bind(f.name, f.descr, f.due, f.status, t, p.id, v.org_id),
+    auditQ(db, v.org_id, v.id, 'project.update', 'project', p.id, null, diff),
+  ];
+  // الاسم منسوخ داخل مهام الموظفين (ليظهر لهم دون استعلام إضافي) ⇒ تتبع إعادة التسمية
+  if (diff.name) stmts.push(db.prepare("UPDATE pdocs SET data = json_set(data, '$.asg.projectName', ?1), updated_at = ?2 WHERE col = 'tasks' AND id LIKE 'a.%' AND json_extract(data, '$.asg.project') = ?3 AND member_id IN (SELECT id FROM members WHERE org_id = ?4)").bind(f.name, t, p.id, v.org_id));
+  await db.batch(stmts);
+  return { ok: true };
 }, { api: true });
 
 /** تفاصيل مهمة: لصاحبها، ولمن فوقه إن كانت ظاهرة. مع التعليقات والمرفقات وسجلها. */
@@ -1498,13 +1616,13 @@ route('GET', '/api/export.csv', async (ctx) => {
     rows = [['الموظف', 'الإدارة', 'القسم', 'الوظيفة', 'الإنجاز %', 'الموزون %', 'في الموعد %', 'الاعتماد %', 'مسندة مستحقة', 'مسندة منجزة', 'متأخرة الآن', 'واجبات متوقعة', 'واجبات منجزة', 'واجبات فائتة', 'متعثرة', 'الحمل %', 'التقارير', 'أيام العمل', 'مستوى الخطر']]
       .concat(M.members.map((x) => { const m = who.get(x.member_id) || {}; return [m.name, m.dep, m.sec, m.pos, x.completion, x.weighted, x.ontime, x.approval, x.assigned.due, x.assigned.done, x.assigned.overdue, x.duties.expected, x.duties.done, x.duties.missed, x.blocked, x.load.pct, x.reports.days, x.reports.expected, { high: 'مرتفع', med: 'متوسط', ok: 'طبيعي' }[x.risk]]; }));
   } else {
-    rows = [['الموظف', 'الإدارة', 'النوع', 'المهمة', 'الأولوية', 'أسندها', 'الموعد', 'الحالة', 'النسبة %', 'أُنجزت', 'في الموعد', 'الاعتماد', 'التعثر', 'تفاصيل الإنجاز', 'التقدير (د)', 'الفعلي (د)']];
+    rows = [['الموظف', 'الإدارة', 'النوع', 'المهمة', 'المشروع', 'الأولوية', 'أسندها', 'الموعد', 'الحالة', 'النسبة %', 'أُنجزت', 'في الموعد', 'الاعتماد', 'التعثر', 'تفاصيل الإنجاز', 'التقدير (د)', 'الفعلي (د)']];
     for (const [mid, list] of M.byM) for (const x of list) {
       const key = isDone(x) && x.doneAt ? localDay(set, x.doneAt) : x.due || localDay(set, x.asg.at);
       if (key < from || key > to) continue;
       const m = who.get(mid) || {};
       const dd = x.doneAt ? localDay(set, x.doneAt) : '';
-      rows.push([m.name, m.dep, x.asg.kind === 'duty' ? 'واجب دوري' : 'مسندة', x.title, PR[prioOf(x)], x.asg.byName || 'التوصيف', x.due, ST[x.status] || x.status, x.prog || 0, dd,
+      rows.push([m.name, m.dep, x.asg.kind === 'duty' ? 'واجب دوري' : 'مسندة', x.title, x.asg.projectName || '', PR[prioOf(x)], x.asg.byName || 'التوصيف', x.due, ST[x.status] || x.status, x.prog || 0, dd,
         dd ? (!x.due || dd <= x.due ? 'نعم' : 'لا') : '', x.rv?.state === 'ok' ? 'معتمدة' : x.rv?.state === 'pending' ? 'بانتظار' : x.rv?.state === 'returned' ? 'مُعادة' : '', x.blocked || '', x.rpt || '', x.est || '', x.spent || '']);
     }
   }

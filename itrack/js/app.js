@@ -39,7 +39,7 @@ const ACTION = {
   'report.approve': 'اعتمد التقرير', 'report.return': 'أعاد التقرير للتعديل', 'report.comment': 'أضاف ملاحظة',
   'task.assign': 'أسند مهمة', 'task.edit': 'عدّل مهمة مسندة', 'task.cancel': 'ألغى مهمة مسندة', 'task.done': 'رفع مهمة منجزة', 'task.reopen': 'أعاد فتح مهمة',
   'task.blocked': 'سجّل تعثّرًا', 'task.approve': 'اعتمد مهمة', 'task.return': 'أعاد مهمة للتعديل',
-  'settings.update': 'غيّر إعدادات التشغيل', 'key.create': 'أصدر مفتاح API', 'key.revoke': 'ألغى مفتاح API',
+  'project.create': 'أنشأ مشروعًا', 'project.update': 'عدّل مشروعًا', 'settings.update': 'غيّر إعدادات التشغيل', 'key.create': 'أصدر مفتاح API', 'key.revoke': 'ألغى مفتاح API',
 };
 const chip = (st) => `<span class="st st-${st}">${STATUS[st] || st}</span>`;
 const store = { get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
@@ -62,7 +62,7 @@ const view = $('#view');
 
 /** تحميل بيانات مرة واحدة ثم إعادة الرسم. الشاشات تطلب ما تحتاجه فقط. */
 // بيانات تتغيّر بفعل غيرك (الموظف يرفع، المدير يعتمد): تُعرض فورًا من الذاكرة ثم تُحدَّث في الخلفية إن قدُمت
-const TTL = [['task|', 15000], ['asg', 20000], ['met|', 30000], ['inbox', 30000]];
+const TTL = [['task|', 15000], ['proj|', 20000], ['asg', 20000], ['met|', 30000], ['inbox', 30000]];
 const cacheAt = new Map();
 function need(key, loader) {
   if (S.cache.has(key)) {

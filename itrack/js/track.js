@@ -64,7 +64,7 @@ async function download(path, name) {
 
 /* ═════════════ الإطار: ثلاث شاشات تحت «المتابعة» ═════════════ */
 export function tabs(cur) {
-  const t = [['board', '#/track', 'لوحة المتابعة'], ['tasks', '#/track/tasks', 'المهام'], ['team', '#/team', 'التقارير اليومية']];
+  const t = [['board', '#/track', 'لوحة المتابعة'], ['tasks', '#/track/tasks', 'المهام'], ['projects', '#/track/p', 'المشاريع'], ['team', '#/team', 'التقارير اليومية']];
   return `<nav class="tabs" aria-label="المتابعة">${t.map(([k, h, l]) => `<a href="${h}"${k === cur ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
 }
 export function vTrack(a, b, c) {
@@ -72,6 +72,7 @@ export function vTrack(a, b, c) {
   if (a === 't') return vTask(b, c);
   if (a === 'm') return vPerson(b);
   if (a === 'tasks') return vTasks();
+  if (a === 'p') return b ? vProject(b) : vProjects();
   return vBoard();
 }
 const periodSeg = () => `<div class="seg" role="group" aria-label="الفترة">${[['7', '٧ أيام'], ['30', '٣٠ يومًا'], ['month', 'هذا الشهر']].map(([k, l]) => `<button data-act="tp" data-v="${k}" aria-pressed="${(H.S.tp || '30') === k}">${l}</button>`).join('')}</div>`;
@@ -168,7 +169,7 @@ const urg = (t) => (t.blocked ? 0 : late(t) ? 1 : t.prio === 3 ? 2 : 3);
 const byUrg = (a2, b2) => urg(a2) - urg(b2) || (a2.due || '9').localeCompare(b2.due || '9');
 function trow(x) {
   const m = who(x.member_id); const c = col(x);
-  return `<li><a class="trow" href="${ref(x)}">${prioDot(x.prio)}<span class="rt"><b>${H.esc(x.title)}</b><small>${x.asg.kind === 'duty' ? `واجب ${FREQ[x.asg.freq]} · ` : ''}${H.esc(m?.name || '')} · <span class="${late(x) ? 'hot' : ''}">${dueTxt(x)}</span></small></span>
+  return `<li><a class="trow" href="${ref(x)}">${prioDot(x.prio)}<span class="rt"><b>${H.esc(x.title)}</b><small>${x.asg.kind === 'duty' ? `واجب ${FREQ[x.asg.freq]} · ` : ''}${H.esc(m?.name || '')}${x.asg.projectName ? ` · ${H.esc(x.asg.projectName)}` : ''} · <span class="${late(x) ? 'hot' : ''}">${dueTxt(x)}</span></small></span>
     <span class="tmeta">${x.comments ? `<span>${H.I('note')}${H.n(x.comments)}</span>` : ''}${x.photos.length ? `<span>${H.I('share')}${H.n(x.photos.length)}</span>` : ''}${c !== 'done' && c !== 'review' ? meter(x.prog, 'acc') : ''}<span class="sc s-${late(x) && c !== 'blocked' ? 'late' : c}">${late(x) && c !== 'blocked' ? 'متأخرة' : ST[c]}</span></span></a></li>`;
 }
 
@@ -239,7 +240,7 @@ function vTask(owner, tid) {
   if (D.error) return `<div class="wrap">${back}${H.errCard(D)}</div>`;
   const x = D.task; const a = x.asg || {}; const c = col(x);
   const edit = H.S.edit.task === key && D.can_edit;
-  const chips = `<span class="sc s-${late(x) && c !== 'blocked' ? 'late' : c}">${late(x) && c !== 'blocked' ? 'متأخرة' : ST[c]}</span><span class="tag p${x.prio}">${PR[x.prio]}</span>${a.kind === 'duty' ? `<span class="tag">واجب ${FREQ[a.freq]}</span>` : ''}`;
+  const chips = `<span class="sc s-${late(x) && c !== 'blocked' ? 'late' : c}">${late(x) && c !== 'blocked' ? 'متأخرة' : ST[c]}</span><span class="tag p${x.prio}">${PR[x.prio]}</span>${a.kind === 'duty' ? `<span class="tag">واجب ${FREQ[a.freq]}</span>` : ''}${projLink(x)}`;
   const steps = x.steps.length ? `<ul class="chk">${x.steps.map((s) => `<li class="${s.done ? 'on' : ''}">${H.I(s.done ? 'check' : 'x')}<span>${H.esc(s.title)}</span></li>`).join('')}</ul>` : '';
   const rv = x.rv;
   const decide = D.can_review && x.status === 'done' ? `<form class="form-grid decide" data-form="tdecide" data-o="${H.esc(owner)}" data-t="${H.esc(tid)}">
@@ -252,11 +253,13 @@ function vTask(owner, tid) {
     ${thread ? `<ol class="thread">${thread}</ol>` : '<p class="hint">لا تعليقات بعد. اكتب هنا بدل واتساب: يبقى النقاش مع المهمة ويُرى سجله.</p>'}
     ${feat('comments') ? `<form data-form="tcomment" data-o="${H.esc(owner)}" data-t="${H.esc(tid)}" class="tcf"><textarea class="in auto" name="body" rows="1" maxlength="2000" data-k="tc|${H.esc(tid)}" placeholder="اكتب تعليقًا… ‎@الاسم للإشارة · Ctrl+Enter للإرسال"></textarea><button class="btn primary sm" type="submit">إرسال</button></form>` : '<p class="hint">التعليقات معطّلة في إعدادات الجهة.</p>'}</div>`;
   const trail = D.trail.length ? `<div class="card"><h2>${H.I('clock')}السجل</h2><ol class="trail">${D.trail.map((t) => `<li><b>${H.esc(t.actor || '—')}</b> ${H.ACTION[t.action] || H.esc(t.action)}<time>${H.fTime.format(new Date(t.at))}</time>${t.data?.note || t.data?.reason || t.data?.rpt ? `<p>${H.esc(t.data.note || t.data.reason || t.data.rpt)}</p>` : ''}</li>`).join('')}</ol></div>` : '';
+  const PLe = edit ? plist('active') : null;
   const editForm = edit ? `<form class="form-grid" data-form="tedit" data-o="${H.esc(owner)}" data-t="${H.esc(tid)}">
       <label class="fld"><span>العنوان</span><input class="in" name="title" required maxlength="200" value="${H.esc(x.title)}" /></label>
       <label class="fld"><span>الوصف</span><textarea class="in auto" name="desc" rows="2" maxlength="2000">${H.esc(a.desc || '')}</textarea></label>
       <div class="form-grid two"><label class="fld"><span>الموعد</span><input class="in" type="date" name="due" value="${H.esc(x.due || '')}" /></label>
       <label class="fld"><span>الأولوية</span><select class="in" name="prio">${[1, 2, 3].map((p) => `<option value="${p}"${x.prio === p ? ' selected' : ''}>${PR[p]}</option>`).join('')}</select></label></div>
+      ${a.kind === 'assign' && (PLe?.projects?.length || a.project) ? projSel('te', PLe?.projects || [], a.project || '', a.projectName) : ''}
       <div class="row"><label class="chk1"><input type="checkbox" name="review"${a.review ? ' checked' : ''} /> تحتاج اعتمادي</label><label class="chk1"><input type="checkbox" name="photo"${a.photo ? ' checked' : ''} /> تتطلب صورة</label></div>
       <div class="row"><button class="btn primary" type="submit">حفظ</button><button type="button" class="btn" data-act="tedit" data-v="">إلغاء</button><span class="spacer"></span><button type="button" class="btn warn" data-act="tcancel" data-o="${H.esc(owner)}" data-t="${H.esc(tid)}">${H.I('trash')}إلغاء المهمة</button></div></form>` : '';
   return `<div class="wrap">${back}
@@ -274,12 +277,77 @@ function vTask(owner, tid) {
 }
 
 /* ═════════════ نموذج الإسناد ═════════════ */
-function blankAssign() { return { title: '', desc: '', due: '', time: '', prio: 1, est: '', review: true, photo: false, steps: '', to: new Set(), q: '' }; }
+/* ═════════════ المشاريع ═════════════
+   المشروع وعاء للمهام المسندة. النسبة يحسبها الخادم من المهام «التي تراها أنت»، فنعلن نطاقها بدل أن نوهم بصورة كاملة. */
+const PH = { empty: ['بلا مهام', 'new'], done: ['منجز', 'done'], late: ['متأخر', 'late'], blocked: ['متعثّر', 'blocked'], ok: ['على المسار', 'doing'] };
+const PSTAT = { active: 'نشطة', done: 'منتهية', archived: 'مؤرشفة' };
+const SCOPE = { all: '', branch: 'النسبة من مهام فريقك فقط؛ لا ترى مهام غيرك في هذا المشروع.', own: 'النسبة من مهامك أنت فقط.' };
+const plist = (st) => H.need(`proj|list|${st}`, () => H.call('GET', `/api/projects?status=${encodeURIComponent(st)}`));
+const projTag = (st) => { const [l, k] = PH[st.health] || PH.empty; return `<span class="sc s-${k}">${l}</span>`; };
+const projLink = (x) => (x.asg?.project ? `<a class="tag proj" href="#/track/p/${encodeURIComponent(x.asg.project)}">${H.I('grid')}${H.esc(x.asg.projectName || 'مشروع')}</a>` : '');
+const pform = (f) => `<form class="card form-grid pform" data-form="${f.id ? 'pedit' : 'pcreate'}"${f.id ? ` data-id="${H.esc(f.id)}"` : ''}>
+    <h2>${H.I('grid')}${f.id ? 'تعديل المشروع' : 'مشروع جديد'}</h2>
+    <label class="fld"><span>اسم المشروع</span><input class="in" name="name" data-pf="name" required maxlength="80" value="${H.esc(f.name)}" data-k="pf-name" autocomplete="off" placeholder="اسم يدل على النتيجة المطلوبة" /></label>
+    <label class="fld"><span>الهدف ومعيار النجاح</span><textarea class="in auto" name="descr" data-pf="descr" rows="2" maxlength="1000" data-k="pf-descr" placeholder="ماذا يتحقق حين ينتهي المشروع؟">${H.esc(f.descr)}</textarea></label>
+    <div class="form-grid two"><label class="fld"><span>الموعد النهائي (اختياري)</span><input class="in" type="date" name="due" data-pf="due" value="${H.esc(f.due || '')}" /></label>
+    ${f.id ? `<label class="fld"><span>الحالة</span><select class="in" name="status" data-pf="status">${Object.entries(PSTAT).map(([k, l]) => `<option value="${k}"${f.status === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}</div>
+    ${f.id ? '<p class="hint">المشروع لا يُحذف: المنتهي أو المؤرشف يبقى سجله ومهامه، ويمكن إعادة تفعيله.</p>' : ''}
+    <div class="row"><button class="btn primary" type="submit">${H.I('check')}${f.id ? 'حفظ' : 'إنشاء'}</button><button type="button" class="btn" data-act="pcancel">إلغاء</button></div></form>`;
+function vProjects() {
+  const st = H.S.pst || 'active';
+  const D = plist(st);
+  const head = H.vh('المشاريع', 'مهام مجمّعة لهدف واحد، بمسؤول وموعد ونسبة إنجاز محسوبة من مهامها', D?.can_create ? `<button class="btn primary" data-act="pnew">${H.I('plus')}مشروع جديد</button>` : '');
+  const seg = `<div class="seg" role="group" aria-label="حالة المشاريع">${Object.entries(PSTAT).map(([k, l]) => `<button data-act="pst" data-v="${k}" aria-pressed="${st === k}">${l}</button>`).join('')}</div>`;
+  if (!D) return `<div class="wrap">${head}${tabs('projects')}${H.loadingCard()}</div>`;
+  if (D.error) return `<div class="wrap">${head}${tabs('projects')}${H.errCard(D)}</div>`;
+  const f = H.S.pf && !H.S.pf.id ? H.S.pf : null;
+  const card = (p) => { const s = p.stats; return `<li><a class="pcard" href="#/track/p/${encodeURIComponent(p.id)}">
+      <span class="ph"><b>${H.esc(p.name)}</b>${projTag(s)}</span>
+      ${p.descr ? `<span class="pd2">${H.esc(p.descr)}</span>` : ''}
+      <span class="progline">${meter(s.pct, 'acc')}<b>${H.n(s.pct)}٪</b></span>
+      <span class="pm"><span>${H.n(s.done)} من ${H.n(s.total)} منجزة</span>${s.overdue ? `<span class="hot">${H.n(s.overdue)} متأخرة</span>` : ''}${s.blocked ? `<span class="hot">${H.n(s.blocked)} متعثّرة</span>` : ''}${p.due ? `<span>الموعد ${H.rel(p.due)}</span>` : ''}${p.owner ? `<span>${H.I('user')}${H.esc(p.owner)}</span>` : ''}</span></a></li>`; };
+  const empty = `<div class="empty"><p>${st === 'active' ? 'لا مشاريع نشطة بعد.' : 'لا شيء هنا.'}</p>${D.can_create && st === 'active' ? `<button class="btn primary sm" data-act="pnew">${H.I('plus')}ابدأ مشروعًا</button>` : ''}</div>`;
+  return `<div class="wrap">${head}${tabs('projects')}${f ? pform(f) : ''}
+    <div class="card"><div class="filters tbar">${seg}</div>
+    ${SCOPE[D.scope] ? `<p class="hint">${SCOPE[D.scope]}</p>` : ''}
+    ${D.projects.length ? `<ul class="plist">${D.projects.map(card).join('')}</ul>` : empty}</div></div>`;
+}
+function vProject(id) {
+  const D = H.need(`proj|${id}`, () => H.call('GET', `/api/projects/${encodeURIComponent(id)}`));
+  const back = `<p style="margin:0 0 10px"><a class="link" style="color:var(--on-bg)" href="#/track/p">← المشاريع</a></p>`;
+  if (!D) return `<div class="wrap">${back}${H.loadingCard()}</div>`;
+  if (D.error) return `<div class="wrap">${back}${H.errCard(D)}</div>`;
+  const p = D.project; const s = D.stats;
+  const editing = D.can_edit && H.S.pf?.id === p.id;
+  const acts = `${projTag(s)}${D.can_edit && !editing ? `<button class="btn sm" data-act="pedit" data-v="${H.esc(p.id)}">تعديل</button>` : ''}${D.can_assign ? `<a class="btn primary" href="#/track/new?project=${encodeURIComponent(p.id)}">${H.I('plus')}إسناد مهمة</a>` : ''}`;
+  const sub = `${PSTAT[p.status] || ''}${p.owner ? ` · المسؤول ${H.esc(p.owner)}` : ''}${p.due ? ` · الموعد ${H.rel(p.due)}` : ''}`;
+  const closed = p.status !== 'active' ? `<div class="notice"><b>${PSTAT[p.status]}</b><p>لا تُسند مهام جديدة إلا بعد إعادة التفعيل.</p>${D.can_edit ? `<button class="btn sm" data-act="pstat" data-id="${H.esc(p.id)}" data-v="active">إعادة التفعيل</button>` : ''}</div>` : '';
+  const mem = D.members.length ? `<div class="card"><h2>${H.I('people')}الأشخاص · ${H.n(D.members.length)}</h2><ul class="pmem">${D.members.map((m) => `<li><a href="#/track/m/${encodeURIComponent(m.member_id)}"><span class="pn">${H.avatar(m.name)}<b>${H.esc(m.name)}</b></span><span class="progline">${meter(m.pct, 'acc')}<b>${H.n(m.pct)}٪</b></span><small>${H.n(m.done)} من ${H.n(m.total)}${m.overdue ? ` · <span class="hot">${H.n(m.overdue)} متأخرة</span>` : ''}</small></a></li>`).join('')}</ul></div>` : '';
+  const open = D.tasks.filter((x) => x.status !== 'done').sort(byUrg); const done = D.tasks.filter((x) => x.status === 'done');
+  return `<div class="wrap">${back}${H.vh(H.esc(p.name), sub, acts)}
+    ${editing ? pform(H.S.pf) : ''}
+    ${closed}
+    <div class="grid2"><div class="stack">
+      <div class="card">${p.descr ? `<p class="desc">${H.esc(p.descr)}</p>` : ''}
+        <div class="progline big">${ring(s.pct, 64)}<span><b>${H.n(s.pct)}٪ منجز</b><small>${H.n(s.done)} من ${H.n(s.total)} مهمة${s.review ? ` · ${H.n(s.review)} بانتظار الاعتماد` : ''}</small></span></div>
+        ${SCOPE[D.scope] ? `<p class="hint">${SCOPE[D.scope]}</p>` : ''}
+        <p class="hint">النسبة موزونة بالأولوية: الحرجة تعدل ثلاث عاديات، والمهمة اثنتين.</p></div>
+      <div class="card"><h2>${H.I('list')}المفتوحة · ${H.n(open.length)}</h2>${open.length ? `<ul class="tl2">${open.slice(0, 200).map(trow).join('')}</ul>` : `<p class="hint">${s.total ? 'لا مهام مفتوحة.' : 'لا مهام بعد. أسند أول مهمة لهذا المشروع.'}</p>`}</div>
+      ${done.length ? `<div class="card"><h2>${H.I('check')}المنجزة · ${H.n(done.length)}</h2><ul class="tl2">${done.slice(0, 100).map(trow).join('')}</ul></div>` : ''}
+    </div><div class="stack">${mem}</div></div></div>`;
+}
+
+/** قائمة اختيار المشروع: النشطة فقط (الخادم يرفض الإسناد لمشروع مغلق)، ويبقى الحالي ظاهرًا إن أُغلق. */
+const projSel = (mode, list, cur, curName = '') => `<label class="fld"><span>المشروع (اختياري)</span><select class="in" ${mode === 'af' ? 'data-af="project"' : 'name="project"'}><option value="">بلا مشروع</option>${list.map((p) => `<option value="${H.esc(p.id)}"${p.id === cur ? ' selected' : ''}>${H.esc(p.name)}</option>`).join('')}${cur && !list.some((p) => p.id === cur) ? `<option value="${H.esc(cur)}" selected>${H.esc(curName || 'مشروع')} (غير نشط)</option>` : ''}</select></label>`;
+function blankAssign() { return { title: '', desc: '', due: '', time: '', prio: 1, est: '', review: true, photo: false, steps: '', to: new Set(), q: '', project: '' }; }
 function vAssign() {
   if (!H.S.af) H.S.af = blankAssign();
   const f = H.S.af;
   const pre = new URLSearchParams(location.hash.split('?')[1] || '').get('to');
   if (pre && !f._pre) { f.to.add(pre); f._pre = true; }
+  const pj = new URLSearchParams(location.hash.split('?')[1] || '').get('project');
+  if (pj && !f._pj) { f.project = pj; f._pj = true; }
+  const PL = plist('active');
   const ppl = canAssignTo();
   const r = range();
   const M = H.S.cache.get(`met|${r.from}|${r.to}`) || metrics();
@@ -300,6 +368,7 @@ function vAssign() {
     ${ppl.length ? `<form class="grid2" data-form="assign"><div class="card form-grid">
       <label class="fld"><span>المهمة</span><input class="in" data-af="title" name="title" required maxlength="200" value="${H.esc(f.title)}" placeholder="ابدأ بفعل: جهّز، راجع، سلّم…" data-k="af-title" autocomplete="off" /></label>
       <label class="fld"><span>التفاصيل ومعيار الإنجاز</span><textarea class="in auto" data-af="desc" rows="3" maxlength="2000" data-k="af-desc" placeholder="ما المطلوب بالضبط؟ متى تُعتبر منجزة؟">${H.esc(f.desc)}</textarea></label>
+      ${PL?.projects?.length ? projSel('af', PL.projects, f.project) : ''}
       <div class="form-grid two"><label class="fld"><span>الموعد</span><input class="in" type="date" data-af="due" min="${H.today()}" value="${H.esc(f.due)}" /></label>
         <label class="fld"><span>الوقت (اختياري)</span><input class="in" type="time" data-af="time" value="${H.esc(f.time)}" /></label></div>
       <div class="fld"><span>الأولوية</span><div class="seg prio" role="radiogroup" aria-label="الأولوية">${[1, 2, 3].map((p) => `<button type="button" role="radio" class="p${p}" data-act="af-prio" data-v="${p}" aria-checked="${f.prio === p}">${PR[p]}</button>`).join('')}</div>
@@ -377,7 +446,7 @@ function commands() {
   const team = H.hasTeam();
   const c = [
     ['يومي: تقريري', '#/day', 'today'], ['مهامي', 'my/', 'note'],
-    team && ['المتابعة: اللوحة', '#/track', 'chart'], team && ['المتابعة: المهام', '#/track/tasks', 'list'], team && ['إسناد مهمة جديدة', '#/track/new', 'plus'],
+    team && ['المتابعة: اللوحة', '#/track', 'chart'], team && ['المتابعة: المهام', '#/track/tasks', 'list'], team && ['المتابعة: المشاريع', '#/track/p', 'grid'], team && ['إسناد مهمة جديدة', '#/track/new', 'plus'],
     team && ['المتابعة: التقارير اليومية', '#/team', 'people'],
     H.isAdmin() && ['الهيكل: الأعضاء', '#/org/members', 'people'], H.isAdmin() && ['الهيكل: الوظائف والتوصيف', '#/org/positions', 'doc'], H.isAdmin() && ['التشغيل والتكامل', '#/org/ops', 'gear'], H.isAdmin() && ['سجل التدقيق', '#/audit', 'list'],
     ['الإعدادات', '#/settings', 'gear'],
@@ -423,6 +492,11 @@ export function click(act, el) {
     case 'tst': S.tf.st = el.dataset.v; if (location.hash.includes('?')) history.replaceState(null, '', '#/track/tasks'); H.render(); return true;
     case 'tkind': S.tf.kind = el.dataset.v; H.render(); return true;
     case 'tv': S.tv = el.dataset.v; H.store.set('it:tv', S.tv); H.render(); return true;
+    case 'pst': S.pst = el.dataset.v; H.render(); return true;
+    case 'pnew': S.pf = S.pf && !S.pf.id ? null : { name: '', descr: '', due: '', status: 'active' }; H.render(); return true;
+    case 'pcancel': S.pf = null; H.render(); return true;
+    case 'pedit': { const d = S.cache.get(`proj|${el.dataset.v}`); if (d && d.project) S.pf = { id: d.project.id, name: d.project.name, descr: d.project.descr, due: d.project.due || '', status: d.project.status }; H.render(); return true; }
+    case 'pstat': H.call('PATCH', `/api/projects/${encodeURIComponent(el.dataset.id)}`, { status: el.dataset.v }).then(() => { H.drop('proj|', 'audit'); H.toast('أُعيد تفعيل المشروع.'); }, (er) => H.toast(er.message)).finally(() => H.render()); return true;
     case 'calm': S.calM = el.dataset.v; H.render(); return true;
     case 'csv': { const r = range(); download(`/api/export.csv?type=${el.dataset.v}&from=${r.from}&to=${r.to}`, `itrack-${el.dataset.v}-${r.from}_${r.to}.csv`).then(() => H.toast('نُزّل الملف. افتحه في Excel.'), (er) => H.toast(er.message)); return true; }
     case 'af-prio': S.af.prio = Number(el.dataset.v); H.render(); return true;
@@ -436,7 +510,7 @@ export function click(act, el) {
     case 'tedit': S.edit.task = el.dataset.v || null; H.render(); return true;
     case 'tcancel': {
       if (!confirm('إلغاء المهمة نهائيًا؟ تُحذف من مهام الموظف مع تعليقاتها وصورها، ويبقى أثرها في السجل.')) return true;
-      H.call('POST', `/api/assign/${encodeURIComponent(el.dataset.o)}/${encodeURIComponent(el.dataset.t)}/cancel`, {}).then(() => { H.drop('asg', 'met|', 'task|', 'inbox'); S.edit.task = null; location.hash = '#/track/tasks'; H.toast('أُلغيت المهمة.'); }, (er) => H.toast(er.message));
+      H.call('POST', `/api/assign/${encodeURIComponent(el.dataset.o)}/${encodeURIComponent(el.dataset.t)}/cancel`, {}).then(() => { H.drop('asg', 'proj|', 'met|', 'task|', 'inbox'); S.edit.task = null; location.hash = '#/track/tasks'; H.toast('أُلغيت المهمة.'); }, (er) => H.toast(er.message));
       return true;
     }
     case 'tsum': {
@@ -465,6 +539,7 @@ export function input(el) {
     return true;
   }
   if (el.dataset.afTo !== undefined && S.af) { if (el.checked) S.af.to.add(el.dataset.afTo); else S.af.to.delete(el.dataset.afTo); H.render(); return true; }
+  if (el.dataset.pf !== undefined && S.pf) { S.pf[el.dataset.pf] = el.value; return true; }
   if (el.dataset.tq !== undefined) { S.tf.q = el.value; H.render(); return true; }
   if (el.dataset.tf && ['dep', 'member'].includes(el.dataset.tf)) { S.tf[el.dataset.tf] = el.value; H.render(); return true; }
   return false;
@@ -477,19 +552,32 @@ export async function submit(form, fd, btn) {
       if (!f.title.trim() || !f.to.size) { H.toast('اكتب المهمة واختر من تسندها له.'); return true; }
       if (btn) btn.disabled = true;
       try {
-        const r = await H.call('POST', '/api/assign', { to: [...f.to], title: f.title.trim(), desc: f.desc.trim(), due: f.due || null, time: f.time || null, prio: f.prio, est: f.est ? Number(f.est) : null, review: !!f.review, photo: !!f.photo, steps: f.steps.split('\n').map((x) => x.trim()).filter(Boolean) });
-        H.drop('asg', 'met|', 'inbox', 'audit'); S.af = null;
+        const r = await H.call('POST', '/api/assign', { to: [...f.to], title: f.title.trim(), desc: f.desc.trim(), due: f.due || null, time: f.time || null, prio: f.prio, est: f.est ? Number(f.est) : null, review: !!f.review, photo: !!f.photo, steps: f.steps.split('\n').map((x) => x.trim()).filter(Boolean), ...(f.project ? { project: f.project } : {}) });
+        H.drop('asg', 'proj|', 'met|', 'inbox', 'audit'); S.af = null;
         H.toast(`أُسندت إلى ${H.n(r.ids.length)}، ووصلهم التنبيه.`);
         location.hash = r.ids.length === 1 ? `#/track/t/${encodeURIComponent(r.ids[0].member_id)}/${encodeURIComponent(r.ids[0].id)}` : '#/track/tasks';
       } catch (er) { H.toast(er.message); if (btn) btn.disabled = false; }
       return true;
+    }
+    case 'pcreate': case 'pedit': {
+      const edit = form.dataset.form === 'pedit'; const name = get('name');
+      if (!name) { H.toast('اكتب اسم المشروع.'); return true; }
+      const body = { name, descr: get('descr'), due: get('due') || null, ...(edit ? { status: get('status') || 'active' } : {}) };
+      if (btn) btn.disabled = true;
+      try {
+        const r = await H.call(edit ? 'PATCH' : 'POST', edit ? `/api/projects/${encodeURIComponent(form.dataset.id)}` : '/api/projects', body);
+        H.drop('proj|', 'asg', 'task|', 'met|', 'audit'); S.pf = null;
+        H.toast(edit ? 'حُفظ المشروع.' : 'أُنشئ المشروع. أسند له أول مهمة.');
+        if (!edit) { location.hash = `#/track/p/${encodeURIComponent(r.id)}`; return true; }
+      } catch (er) { H.toast(er.message); if (btn) btn.disabled = false; return true; }
+      H.render(); return true;
     }
     case 'tdecide': {
       const action = btn?.value; const note = get('note');
       if (action === 'return' && !note) { H.toast('اكتب ما المطلوب تعديله حتى يعرف الموظف.'); form.elements.note.focus(); return true; }
       try {
         await H.call('POST', `/api/assign/${encodeURIComponent(form.dataset.o)}/${encodeURIComponent(form.dataset.t)}/review`, { action, note });
-        H.drop('asg', 'met|', `task|${form.dataset.o}|${form.dataset.t}`, 'inbox');
+        H.drop('asg', 'proj|', 'met|', `task|${form.dataset.o}|${form.dataset.t}`, 'inbox');
         H.toast(action === 'approve' ? 'اعتُمدت.' : 'أُعيدت للموظف بملاحظتك.');
       } catch (er) { H.toast(er.message); }
       H.render(); return true;
@@ -503,7 +591,8 @@ export async function submit(form, fd, btn) {
     }
     case 'tedit': {
       const body = { title: get('title'), desc: get('desc'), due: get('due') || null, prio: Number(get('prio')) || 1, review: fd.get('review') === 'on', photo: fd.get('photo') === 'on' };
-      try { await H.call('PATCH', `/api/assign/${encodeURIComponent(form.dataset.o)}/${encodeURIComponent(form.dataset.t)}`, body); S.edit.task = null; H.drop('asg', 'met|', `task|${form.dataset.o}|${form.dataset.t}`); H.toast('حُفظ، ووصل التعديل للموظف.'); }
+      if (fd.has('project')) { const cur = S.cache.get(`task|${form.dataset.o}|${form.dataset.t}`)?.task?.asg?.project || ''; const nv = get('project'); if (nv !== cur) body.project = nv || null; }
+      try { await H.call('PATCH', `/api/assign/${encodeURIComponent(form.dataset.o)}/${encodeURIComponent(form.dataset.t)}`, body); S.edit.task = null; H.drop('asg', 'proj|', 'met|', `task|${form.dataset.o}|${form.dataset.t}`); H.toast('حُفظ، ووصل التعديل للموظف.'); }
       catch (er) { H.toast(er.message); }
       H.render(); return true;
     }

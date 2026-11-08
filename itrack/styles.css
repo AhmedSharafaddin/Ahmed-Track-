@@ -445,3 +445,20 @@ a.kpi:hover { transform: translateY(-2px); }
 .pal-in li[aria-selected="true"] a, .pal-in a:hover { background: var(--accent-soft); color: var(--accent); }
 .pal-in .hint { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; } .pal-in kbd { margin: 0; }
 @media (prefers-reduced-motion: reduce) { a.kpi, .ring .rv, .sw, .sw::after { transition: none; } }
+
+/* المشاريع */
+.tag.proj { text-decoration: none; } .tag.proj .ic { width: 13px; height: 13px; } a.tag.proj:hover { filter: brightness(.95); text-decoration: underline; }
+.plist { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.pcard { display: grid; gap: 8px; padding: 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); color: var(--ink); text-decoration: none; height: 100%; align-content: start; }
+.pcard:hover, .pcard:focus-visible { border-color: var(--accent); }
+.pcard .ph { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; } .pcard .ph b { font-size: 1rem; line-height: 1.4; overflow-wrap: anywhere; }
+.pcard .pd2 { color: var(--muted); font-size: .85rem; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.pcard .progline { margin: 0; } .pcard .progline .meter { flex: 1; width: auto; min-width: 80px; }
+.pcard .pm { display: flex; gap: 6px 12px; flex-wrap: wrap; color: var(--muted); font-size: .8rem; } .pcard .pm span { display: inline-flex; gap: 4px; align-items: center; } .pcard .pm .ic { width: 14px; height: 14px; } .pcard .pm .hot { color: var(--bad); font-weight: 600; }
+.progline.big { gap: 14px; flex-wrap: nowrap; } .progline.big > span { display: grid; gap: 2px; } .progline.big b { font-size: 1.15rem; } .progline.big small { color: var(--muted); }
+.pmem { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.pmem a { display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, 140px); gap: 4px 12px; align-items: center; padding: 8px 4px; border-radius: 10px; color: var(--ink); text-decoration: none; } .pmem a:hover { background: var(--surface-2); }
+.pmem .pn { display: flex; gap: 8px; align-items: center; min-width: 0; } .pmem .pn b { overflow-wrap: anywhere; font-size: .9rem; }
+.pmem .progline { margin: 0; flex-wrap: nowrap; } .pmem .progline .meter { flex: 1; width: auto; min-width: 40px; }
+.pmem small { grid-column: 1 / -1; color: var(--muted); } .pmem small .hot { color: var(--bad); font-weight: 600; }
+.pform { margin-bottom: 14px; }
