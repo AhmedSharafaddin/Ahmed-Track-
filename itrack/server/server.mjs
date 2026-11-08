@@ -43,7 +43,7 @@ const env = {
   DB: db,
   SIGNUP: E.SIGNUP || 'invite',
   AUTH_FIREBASE: E.AUTH_FIREBASE || '0', // سيرفر الشركة لا يعتمد على Google
-  PBKDF2_ITERS: E.PBKDF2_ITERS || '310000', // Node لا يقيّدها كـCloudflare ⇒ أقوى
+  PBKDF2_ITERS: E.PBKDF2_ITERS || '600000', // الحد الموصى به لـSHA-256 (OWASP)؛ Node لا يقيّدها كـCloudflare. الكلمات القديمة تبقى صالحة وتُجدَّد عند تغييرها
   ALLOWED_ORIGINS: E.ALLOWED_ORIGINS, AI_URL: E.AI_URL, AI_KEY: E.AI_KEY, AI_STT_MODEL: E.AI_STT_MODEL, AI_LLM_MODEL: E.AI_LLM_MODEL,
 };
 const W = (await import('../worker/worker.js')).default;

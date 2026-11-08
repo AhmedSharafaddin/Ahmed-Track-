@@ -231,9 +231,11 @@ async function pbkdf2(pass, saltHex, iters) {
 }
 const same = (a, b) => { if (a.length !== b.length) return false; let x = 0; for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i); return x === 0; };
 async function hashPass(env, pass) { const salt = hex(rand(16)); const iters = itersOf(env); return { salt, iters, hash: await pbkdf2(pass, salt, iters) }; }
+const WEAK_PASS = new Set(['12345678', '123456789', '1234567890', '87654321', '987654321', 'password', 'password1', 'passw0rd', 'qwertyui', 'qwerty123', 'abcd1234', 'abcdefgh', 'iloveyou', '11223344', '12341234', 'admin123', 'admin1234', 'letmein1', 'welcome1', '00000000', '777777777', '12345678910', 'asastelecom', 'asas1234', 'asas12345', '1q2w3e4r']);
 const checkPass = (pass) => {
   if (typeof pass !== 'string' || pass.length < 8) fail(400, 'weak-password', 'كلمة المرور ٨ أحرف على الأقل.');
   if (pass.length > 200) fail(400, 'invalid', 'كلمة المرور طويلة جدًا.');
+  if (WEAK_PASS.has(pass.toLowerCase()) || /^(.)\1+$/.test(pass)) fail(400, 'weak-password', 'كلمة المرور شائعة جدًا. اختر غيرها.');
   return pass;
 };
 const ipOf = (req) => req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || 'local';
@@ -992,13 +994,25 @@ function cleanSet(b, cur) {
     const old = new Map(o.hooks.map((h) => [h.id, h]));
     o.hooks = b.hooks.slice(0, 5).map((h) => {
       let u; try { u = new URL(String(h?.url || '')); } catch { return null; }
-      if (!['https:', 'http:'].includes(u.protocol) || u.href.length > 400) return null;
+      if (!['https:', 'http:'].includes(u.protocol) || u.href.length > 400 || u.username || u.password) return null;
+      if (hookHostBlocked(u.hostname)) fail(400, 'invalid', 'عنوان الربط غير مسموح (جهاز الخادم نفسه أو خدمة البيانات الوصفية). استخدم عنوان النظام المستهدف.');
       const prev = old.get(h.id);
       return { id: prev?.id || id(), name: text(h.name, 60), url: u.href, events: (Array.isArray(h.events) ? h.events : []).filter((e) => EVENTS.includes(e)), on: h.on !== false, secret: prev?.secret || 'whs_' + b64e(rand(24)) };
     }).filter(Boolean);
   }
   return o;
 }
+/** حماية SSRF للـWebhooks: يُحجب ما يصل لجهاز الخادم نفسه أو لخدمات البيانات الوصفية السحابية (وفيها أسرار الجهاز).
+ *  الشبكة الداخلية (10.x / 192.168.x) مسموحة عمدًا لأن الربط مع ERP أو n8n داخل الجهة حالة استخدام مقصودة؛ يضبطها جدار الـIT.
+ *  ملاحظة: لا يمكن من هنا منع اسم نطاق يُحلّ لعنوان محجوب (DNS rebinding)؛ الحل الكامل جدار صادر على سيرفر الجهة. */
+function hookHostBlocked(host) {
+  const h = String(host).toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h === 'metadata.google.internal' || h === 'instance-data') return true;
+  const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); // المحلّل يحوّل الصيغ العشرية والسداسية إلى نقطية قبل وصولنا
+  if (m) { const a = +m[1], b = +m[2]; return a === 127 || a === 0 || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127); }
+  return /^(::1?|fe[89ab][0-9a-f:]*|::ffff:.*|fd00:ec2:.*)$/.test(h);
+}
+const hookSafe = (url) => { try { const u = new URL(url); return ['https:', 'http:'].includes(u.protocol) && !hookHostBlocked(u.hostname); } catch { return false; } };
 const adminSet = (ctx, s) => ({ ...s, events: EVENTS, ai_server: aiProvider(ctx.env) });
 route('GET', '/api/settings', async (ctx) => { const s = await getSet(ctx); return ctx.v.isAdmin ? adminSet(ctx, s) : pubSet(s); });
 route('PUT', '/api/settings', async (ctx) => {
@@ -1515,8 +1529,9 @@ async function deliver(ctx) {
   const jobs = [];
   for (const ev of ctx.events) for (const h of hooks) {
     if (h.events.length && !h.events.includes(ev.event)) continue;
+    if (!hookSafe(h.url)) continue; // دفاع إضافي: قد يكون الرابط حُفظ قبل إضافة الحجب
     const body = JSON.stringify({ event: ev.event, at: now(), org: { id: ctx.v.org_id, name: ctx.orgName }, data: ev.data, text: ev.text });
-    jobs.push(hmacHex(h.secret, body).then((sig) => fetch(h.url, { method: 'POST', body,
+    jobs.push(hmacHex(h.secret, body).then((sig) => fetch(h.url, { method: 'POST', body, redirect: 'manual', // لا نتبع التحويلات: رابط عام قد يحوّل إلى عنوان داخلي
       headers: { 'content-type': 'application/json', 'user-agent': 'ITrack-Webhook/1', 'x-itrack-event': ev.event, 'x-itrack-signature': 'sha256=' + sig },
       signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined })).catch(() => {}));
   }
@@ -1529,10 +1544,12 @@ route('POST', '/api/settings/hooks/:hid/test', async (ctx) => {
   const h = set.hooks.find((x) => x.id === ctx.p.hid);
   if (!h) fail(404, 'not-found', 'الرابط غير موجود.');
   const body = JSON.stringify({ event: 'test', at: now(), org: { id: ctx.v.org_id, name: ctx.orgName }, data: {}, text: `اختبار ربط ITrack من ${ctx.v.name}` });
+  if (!hookSafe(h.url)) return { ok: false, status: 0, error: 'عنوان غير مسموح.' };
   try {
-    const r = await fetch(h.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'user-agent': 'ITrack-Webhook/1', 'x-itrack-event': 'test', 'x-itrack-signature': 'sha256=' + await hmacHex(h.secret, body) }, signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined });
+    const r = await fetch(h.url, { method: 'POST', body, redirect: 'manual', headers: { 'content-type': 'application/json', 'user-agent': 'ITrack-Webhook/1', 'x-itrack-event': 'test', 'x-itrack-signature': 'sha256=' + await hmacHex(h.secret, body) }, signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined });
+    // ننقل حالة HTTP فقط؛ نص الخطأ الخام يكشف للمسؤول الفرق بين «منفذ مغلق» و«مهلة» فيصلح لمسح الشبكة الداخلية
     return { ok: r.ok, status: r.status };
-  } catch (e) { return { ok: false, status: 0, error: String(e?.message || e).slice(0, 200) }; }
+  } catch { return { ok: false, status: 0, error: 'تعذّر الاتصال بالعنوان.' }; }
 });
 
 route('GET', '/api/keys', async (ctx) => {

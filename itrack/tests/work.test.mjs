@@ -127,6 +127,25 @@ ok('webhook: saved with generated secret', hook.secret.startsWith('whs_') && hoo
 r = await call(U.gm, 'PUT', '/api/settings', { hooks: [{ id: hook.id, url: 'https://hooks.test/a', events: ['task.done', 'task.blocked', 'task.returned'] }, { url: 'javascript:alert(1)' }, { url: 'ftp://x.test' }] });
 ok('webhook: secret kept on edit, bad URLs dropped', r.data.hooks.length === 1 && r.data.hooks[0].secret === hook.secret, r.data.hooks);
 
+/* ───── حماية SSRF للـWebhooks ───── */
+for (const bad of ['http://127.0.0.1:8080/x', 'http://localhost/x', 'http://169.254.169.254/latest/meta-data/', 'http://[::1]/x', 'http://2130706433/x', 'http://0x7f.1/x', 'http://[::ffff:127.0.0.1]/x', 'http://metadata.google.internal/x', 'http://100.100.100.200/x', 'http://0.0.0.0/x', 'https://user:pw@hooks.test/x']) {
+  const GOOD = { id: hook.id, url: 'https://hooks.test/a', events: ['task.done', 'task.blocked', 'task.returned'] };
+  r = await call(U.gm, 'PUT', '/api/settings', { hooks: [GOOD, { url: bad, events: [] }] });
+  ok('ssrf: blocked ' + bad, r.status === 400 || (r.data.hooks.length === 1 && r.data.hooks[0].url === GOOD.url), [r.status, r.data.error, r.data.hooks?.map((h) => h.url)]);
+}
+r = await call(U.gm, 'PUT', '/api/settings', { hooks: [{ id: hook.id, url: 'http://10.1.2.3:5678/webhook/x', events: [] }] });
+ok('ssrf: private LAN (ERP/n8n) still allowed by design', r.status === 200 && r.data.hooks[0].url.startsWith('http://10.1.2.3'), [r.status, r.data]);
+r = await call(U.gm, 'PUT', '/api/settings', { hooks: [{ id: hook.id, url: 'https://hooks.test/a', events: ['task.done', 'task.blocked', 'task.returned'] }] });
+ok('ssrf: hook identity and secret survive all rejected attempts', r.data.hooks.length === 1 && r.data.hooks[0].id === hook.id && r.data.hooks[0].secret === hook.secret, r.data.hooks);
+{ // لا نتبع التحويلات، ورسالة فشل الاختبار لا تكشف سبب الاتصال الخام
+  let opt = null; const keep = globalThis.fetch;
+  globalThis.fetch = async (u, o = {}) => { if (String(u).startsWith('https://hooks.test/')) { opt = o; throw new Error('connect ECONNREFUSED 10.0.0.9:5432'); } return keep(u, o); };
+  r = await call(U.gm, 'POST', `/api/settings/hooks/${hook.id}/test`, {});
+  globalThis.fetch = keep;
+  ok('webhook: redirects are not followed', opt?.redirect === 'manual', opt);
+  ok('webhook test: raw network error is not leaked to the admin', r.data.ok === false && !JSON.stringify(r.data).includes('ECONNREFUSED') && !JSON.stringify(r.data).includes('5432'), r.data);
+}
+
 /* ───── الإنجاز والمراجعة ───── */
 hooks.length = 0;
 await P(U.emp, [{ op: 'patch', col: 'tasks', id: A1, data: { status: 'done', completedAt: new Date().toISOString(), rpt: 'طابقت كل الرفوف، الفرق ٣ قطع' } }]);
@@ -304,6 +323,32 @@ ok('audit: settings changes recorded', DB.sq.prepare("SELECT COUNT(*) c FROM aud
 ok('assigned list: manager sees branch tasks with comment counts', (await call(U.mgr, 'GET', '/api/assigned')).data.tasks.find((t) => t.id === A1)?.comments === 2);
 ok('assigned list: employee sees nothing', (await call(U.emp, 'GET', '/api/assigned')).data.tasks.length === 0);
 ok('team/tasks (old route) still works', (await call(U.mgr, 'GET', `/api/team/tasks?member=${mEmp}`)).data.tasks.some((t) => t.id === A1));
+
+/* ───── مراجعة أمنية: تصعيد الصلاحيات ونطاق التصدير وإبطال الجلسات ───── */
+r = await call(U.emp, 'PATCH', `/api/members/${mEmp}`, { role: 'admin' });
+ok('privilege: employee cannot promote himself via members PATCH', r.status === 403 && (await call(U.gm, 'GET', '/api/bootstrap')).data.members.find((m) => m.id === mEmp).role === 'employee', r.data);
+r = await call(U.mgr, 'PATCH', `/api/members/${mEmp}`, { role: 'admin' });
+ok('privilege: manager cannot promote his report', r.status === 403, r.data);
+{ const lines = String((await call(U.emp, 'GET', '/api/export.csv')).data).trim().split('\n').length;
+  ok('scope: employee export never lists other people (header + at most his own row)', lines <= 2, lines); }
+for (const [who, p] of [['emp', '/api/audit'], ['emp', '/api/settings/hooks/x/test'], ['mgr', '/api/audit'], ['mgr', '/api/keys']]) {
+  r = await call(U[who], p.includes('hooks') ? 'POST' : 'GET', p, p.includes('hooks') ? {} : null);
+  ok(`scope: ${who} refused on ${p}`, [403, 404].includes(r.status), [r.status, r.data?.error]);
+}
+{ const csvOf = async (who) => (await call(U[who], 'GET', '/api/export.csv')).data;
+  const mgrCsv = String(await csvOf('mgr')); const sibCsv = String(await csvOf('sib'));
+  ok('scope: export is limited to the requester\'s own branch', mgrCsv.includes('سالم') && !sibCsv.includes('سالم'), [mgrCsv.length, sibCsv.length]); }
+{ // تعطيل الموظف يُبطل جلسته فورًا، وتبقى بقية الجهة سليمة
+  const before = await call(U.emp3, 'GET', '/api/me');
+  await call(U.gm, 'PATCH', `/api/members/${mEmp3}`, { status: 'disabled' });
+  const after = await call(U.emp3, 'GET', '/api/bootstrap');
+  ok('session: disabled member loses access immediately', before.status === 200 && [401, 403].includes(after.status), [before.status, after.status, after.data?.error]);
+  await call(U.gm, 'PATCH', `/api/members/${mEmp3}`, { status: 'active' });
+}
+r = await call('it_' + 'a'.repeat(43), 'GET', '/api/me', null, { org: null });
+ok('session: random it_ token refused', r.status === 401, r.status);
+r = await call(U.gm, 'POST', '/api/p', { ops: [{ op: 'set', col: 'tasks', id: '../../x', data: { title: 'x' } }] });
+ok('input: path-like document id refused or ignored', r.status === 400 || !(await myTasks(U.gm)).some((t) => String(t.id).includes('..')), r.data);
 
 console.log(`\n${pass} pass, ${fails} fail`);
 process.exit(fails ? 1 : 0);

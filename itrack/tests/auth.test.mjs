@@ -37,6 +37,7 @@ const call = mk(env);
 let r = await call(null, 'GET', '/api/health');
 ok('health: local auth, invite mode, ai via openai', r.data.auth === 'local' && r.data.signup === 'invite' && r.data.ai === 'openai', r.data);
 ok('signup: weak password rejected', (await call(null, 'POST', '/api/auth/signup', { email: 'boss@co.test', password: '123' })).data.error === 'weak-password');
+for (const w of ['12345678', 'Password', 'aaaaaaaaaa', 'QWERTYUI']) ok('signup: common password rejected: ' + w, (await call(null, 'POST', '/api/auth/signup', { email: 'boss@co.test', password: w })).data.error === 'weak-password');
 r = await call(null, 'POST', '/api/auth/signup', { email: 'Boss@Co.test', password: 'secret-pass-1' });
 ok('signup: first account allowed in invite mode', r.status === 200 && r.data.token.startsWith('it_') && r.data.user.email === 'boss@co.test', r.data);
 const boss = r.data.token;
