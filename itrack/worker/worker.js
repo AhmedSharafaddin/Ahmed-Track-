@@ -96,6 +96,29 @@ const MIGRATIONS = [
     'CREATE INDEX IF NOT EXISTS sec_org ON sections(org_id, department_id)',
     'ALTER TABLE members ADD COLUMN section_id TEXT',
   ],
+  [
+    // الإسناد والمتابعة: إعدادات الجهة (مفاتيح التشغيل)، واجبات دورية من التوصيف، تعليقات، مرفقات، تنبيهات، مفاتيح تكامل، تقويم.
+    "ALTER TABLE orgs ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE responsibilities ADD COLUMN freq TEXT NOT NULL DEFAULT ''", // '' | daily | weekly | monthly
+    'ALTER TABLE responsibilities ADD COLUMN prio INTEGER NOT NULL DEFAULT 1', // 1 عادية · 2 مهمة · 3 حرجة
+    'ALTER TABLE responsibilities ADD COLUMN est INTEGER',
+    'ALTER TABLE responsibilities ADD COLUMN freq_at INTEGER', // متى صارت دورية (لا يُحاسَب الموظف على ما قبلها)
+    `CREATE TABLE IF NOT EXISTS comments (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, owner_id TEXT NOT NULL, task_id TEXT NOT NULL,
+      author_id TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', file_id TEXT, at INTEGER NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS com_task ON comments(owner_id, task_id, at)',
+    `CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, owner_id TEXT NOT NULL, task_id TEXT NOT NULL, by_id TEXT NOT NULL,
+      kind TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL, at INTEGER NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS files_task ON files(owner_id, task_id)',
+    'CREATE INDEX IF NOT EXISTS files_at ON files(org_id, at)',
+    `CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT NOT NULL, member_id TEXT NOT NULL, kind TEXT NOT NULL,
+      owner_id TEXT, task_id TEXT, text TEXT NOT NULL, by_id TEXT, at INTEGER NOT NULL, read_at INTEGER)`,
+    'CREATE INDEX IF NOT EXISTS notes_mem ON notes(member_id, at)',
+    `CREATE TABLE IF NOT EXISTS api_keys (kh TEXT PRIMARY KEY, kp TEXT NOT NULL, org_id TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL,
+      created_at INTEGER NOT NULL, last_at INTEGER, revoked INTEGER NOT NULL DEFAULT 0)`,
+    'CREATE INDEX IF NOT EXISTS keys_org ON api_keys(org_id)',
+    'CREATE TABLE IF NOT EXISTS feeds (th TEXT PRIMARY KEY, org_id TEXT NOT NULL, member_id TEXT NOT NULL, created_at INTEGER NOT NULL)',
+    'CREATE INDEX IF NOT EXISTS feeds_mem ON feeds(member_id)',
+  ],
 ];
 
 const migrated = new WeakSet(); // لكل قاعدة على حدة؛ وعلى Cloudflare ربط واحد فقط فتكفي مرة لكل نسخة
@@ -162,6 +185,12 @@ async function googleKey(kid, env) {
 }
 async function identity(req, env, db) {
   const auth = req.headers.get('authorization') || '';
+  // مفتاح تكامل (نظام خارجي): يعمل باسم العضو الذي أصدره، وعلى مسارات التكامل فقط
+  const km = auth.match(/^Bearer (itk_[\w-]{20,80})$/);
+  if (km) {
+    const k = await db.prepare('SELECT * FROM api_keys WHERE kh = ? AND revoked = 0').bind(await sha(km[1])).first();
+    return k ? { uid: 'key:' + k.kh.slice(0, 12), email: '', verified: true, key: k } : null;
+  }
   const sm = auth.match(/^Bearer (it_[\w-]{20,80})$/);
   if (sm) {
     const th = await sha(sm[1]); const t = now();
@@ -384,13 +413,15 @@ route('POST', '/api/orgs', async ({ db, env, user, body }) => {
 });
 
 /** كل ما تحتاجه الواجهة عند الفتح، مقيّدًا بما يحق لي رؤيته. */
-route('GET', '/api/bootstrap', async ({ db, v }) => {
+route('GET', '/api/bootstrap', async (ctx) => {
+  const { db, v } = ctx;
   const org = await db.prepare('SELECT id, name FROM orgs WHERE id = ?').bind(v.org_id).first();
+  const set = await getSet(ctx);
   const [mem, deps, pos, resp, secs] = await db.batch([
     db.prepare('SELECT * FROM members WHERE org_id = ? ORDER BY name').bind(v.org_id),
     db.prepare('SELECT id, name, active FROM departments WHERE org_id = ? ORDER BY name').bind(v.org_id),
     db.prepare('SELECT id, title, department_id, summary, version, active FROM positions WHERE org_id = ? ORDER BY title').bind(v.org_id),
-    db.prepare('SELECT id, position_id, title, detail, sort, active FROM responsibilities WHERE org_id = ? ORDER BY sort').bind(v.org_id),
+    db.prepare('SELECT id, position_id, title, detail, sort, active, freq, prio, est FROM responsibilities WHERE org_id = ? ORDER BY sort').bind(v.org_id),
     db.prepare('SELECT id, department_id, name, active FROM sections WHERE org_id = ? ORDER BY name').bind(v.org_id),
   ]);
   const all = mem.results;
@@ -407,8 +438,9 @@ route('GET', '/api/bootstrap', async ({ db, v }) => {
     departments: deps.results,
     sections: secs.results,
     positions: pos.results.filter((p) => posIds.has(p.id)).map((p) => ({ ...p, responsibilities: resp.results.filter((r) => r.position_id === p.id) })),
+    settings: pubSet(set), ai: !!aiProvider(ctx.env),
   };
-});
+}, { api: true });
 
 /* ───── الهيكل: إدارات ووظائف (المسؤول) ───── */
 route('POST', '/api/departments', async ({ db, v, body }) => {
@@ -475,16 +507,21 @@ async function savePosition(db, v, body, existing) {
   list.forEach((r, i) => {
     const t = text(r?.title, 160); if (!t) return;
     const d = text(r?.detail, 800);
+    // واجب دوري: يظهر تلقائيًا في مهام كل من يشغل الوظيفة (يوميًا/أسبوعيًا/شهريًا)
+    const freq = FREQS.includes(r?.freq) ? r.freq : '';
+    const prio = int(r?.prio, 1, 3, 1);
+    const est = int(r?.est, 5, 960, null);
     const prev = r?.id && oldMap.get(r.id);
     if (prev) {
       keep.add(prev.id);
-      if (prev.title !== t || prev.detail !== d || prev.sort !== i || !prev.active) {
+      if (prev.title !== t || prev.detail !== d || prev.sort !== i || !prev.active || (prev.freq || '') !== freq || (prev.prio || 1) !== prio || (prev.est ?? null) !== est) {
         changed = true;
-        stmts.push(db.prepare('UPDATE responsibilities SET title = ?, detail = ?, sort = ?, active = 1 WHERE id = ?').bind(t, d, i, prev.id));
+        const fat = freq && freq !== (prev.freq || '') ? now() : prev.freq_at ?? null;
+        stmts.push(db.prepare('UPDATE responsibilities SET title = ?, detail = ?, sort = ?, active = 1, freq = ?, prio = ?, est = ?, freq_at = ? WHERE id = ?').bind(t, d, i, freq, prio, est, fat, prev.id));
       }
     } else {
       changed = true;
-      stmts.push(db.prepare('INSERT INTO responsibilities (id, org_id, position_id, title, detail, sort) VALUES (?, ?, ?, ?, ?, ?)').bind(id(), v.org_id, pid, t, d, i));
+      stmts.push(db.prepare('INSERT INTO responsibilities (id, org_id, position_id, title, detail, sort, freq, prio, est, freq_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id(), v.org_id, pid, t, d, i, freq, prio, est, freq ? now() : null));
     }
   });
   for (const r of old) if (!keep.has(r.id) && r.active) { changed = true; stmts.push(db.prepare('UPDATE responsibilities SET active = 0 WHERE id = ?').bind(r.id)); }
@@ -494,7 +531,8 @@ async function savePosition(db, v, body, existing) {
     ? db.prepare('UPDATE positions SET title = ?, summary = ?, department_id = ?, version = ?, updated_at = ? WHERE id = ?').bind(title, summary, depId, version, now(), pid)
     : db.prepare('INSERT INTO positions (id, org_id, title, department_id, summary, version, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)').bind(pid, v.org_id, title, depId, summary, now()));
   stmts.push(auditQ(db, v.org_id, v.id, existing ? 'position.update' : 'position.create', 'position', pid, null,
-    { title, version, responsibilities: list.map((r) => text(r?.title, 160)).filter(Boolean) }));
+    { title, version, responsibilities: list.map((r) => text(r?.title, 160) && [text(r?.title, 160), FREQS.includes(r?.freq) ? r.freq : ''].filter(Boolean).join(' · ')).filter(Boolean) }));
+  dutyMemo.clear(); // تغيّر التوصيف ⇒ تُراجع الواجبات عند القراءة التالية
   await db.batch(stmts);
   return { id: pid, version };
 }
@@ -658,8 +696,10 @@ route('PUT', '/api/report/:date', async ({ db, v, body, p }) => {
 });
 
 /** رفع التقرير: تُحفظ في السجل نسخة كاملة مما رُفع (دليل لا يتغيّر). */
-route('POST', '/api/report/:date/submit', async ({ db, v, body, p }) => {
+route('POST', '/api/report/:date/submit', async (ctx) => {
+  const { db, v, body, p } = ctx;
   const { report, items } = await reportOf(db, v.id, p.date);
+  emit(ctx, 'report.submitted', { member: { id: v.id, name: v.name }, date: p.date, items: items.length }, `${v.name} رفع تقرير ${p.date} (${items.length} بند)`);
   checkDay(p.date, body.today, report?.status === 'returned');
   if (!report || !items.length) fail(400, 'empty', 'أضف بندًا واحدًا على الأقل قبل الرفع.');
   if (!['draft', 'returned'].includes(report.status)) fail(409, 'locked', 'التقرير مرفوع مسبقًا.');
@@ -730,17 +770,51 @@ route('GET', '/api/history', async ({ db, v, q }) => {
 });
 
 /** صندوق الوارد: تقارير مرفوعة تنتظر مراجعتي (آخر ١٤ يومًا، الأقدم أولًا)، وتقاريري المُعادة لي للتعديل. */
-route('GET', '/api/inbox', async ({ db, v, q }) => {
-  const t = isDay(q.get('today')) ? q.get('today') : dayOf(now());
+route('GET', '/api/inbox', async (ctx) => {
+  const { db, v, q } = ctx;
+  const set = await getSet(ctx);
+  const t = isDay(q.get('today')) ? q.get('today') : orgToday(set);
   const from = addDays(t, -14);
-  const [sub, ret] = await db.batch([
+  const [sub, ret, nts, mine, rep] = await db.batch([
     db.prepare("SELECT member_id, date, submitted_at, late FROM reports WHERE org_id = ? AND status = 'submitted' AND date >= ? AND member_id != ? ORDER BY date, submitted_at LIMIT 300").bind(v.org_id, from, v.id),
     db.prepare("SELECT date, review_comment, reviewed_at FROM reports WHERE member_id = ? AND status = 'returned' ORDER BY date LIMIT 30").bind(v.id),
+    db.prepare('SELECT id, kind, owner_id, task_id, text, by_id, at, read_at FROM notes WHERE member_id = ? ORDER BY at DESC LIMIT 40').bind(v.id),
+    db.prepare("SELECT id, data FROM pdocs WHERE member_id = ? AND col = 'tasks' AND (id LIKE 'a.%' OR id LIKE 'd.%')").bind(v.id),
+    db.prepare("SELECT status FROM reports WHERE member_id = ? AND date = ?").bind(v.id, t),
   ]);
+  // تنبيهات محسوبة لحظة القراءة (بلا Cron ⇒ تعمل على Cloudflare وعلى سيرفر الجهة بنفس الطريقة)
+  const alerts = [];
+  const R = set.rules;
+  for (const r of mine.results) {
+    const x = JSON.parse(r.data); if (isDone(x)) continue;
+    if (R.overdue && x.due && x.due < t) alerts.push({ kind: 'overdue', task_id: r.id, title: x.title, due: x.due });
+    else if (R.dueSoon && x.due && x.due <= addDays(t, 1) && x.asg?.kind === 'assign') alerts.push({ kind: 'soon', task_id: r.id, title: x.title, due: x.due });
+    if (R.returned && x.rv?.state === 'returned') alerts.push({ kind: 'returned', task_id: r.id, title: x.title, note: x.rv.note });
+  }
+  const hour = new Date(now() + set.tz * 60000).getUTCHours();
+  if (R.report && set.reportHour >= 0 && !isOff(set, t) && hour >= set.reportHour && !['submitted', 'approved'].includes(rep.results[0]?.status)) alerts.push({ kind: 'report', date: t });
+  let team = null;
+  if (v.isAdmin || v.subs.size) {
+    const list = (await teamAsg(ctx, {})).filter((x) => x.asg.kind === 'assign' || !isDone(x));
+    const open = list.filter((x) => !isDone(x));
+    team = {
+      overdue: R.overdue ? open.filter((x) => x.due && x.due < t).length : 0,
+      blocked: R.blocked ? open.filter((x) => x.blocked).slice(0, 10).map((x) => ({ member_id: x.member_id, id: x.id, title: x.title, blocked: x.blocked })) : [],
+      pending: list.filter((x) => isDone(x) && x.rv?.state === 'pending' && canReview(v, x.member_id)).slice(0, 30).map((x) => ({ member_id: x.member_id, id: x.id, title: x.title, doneAt: x.doneAt })),
+    };
+  }
+  if (Math.random() < 0.01) await db.prepare('DELETE FROM notes WHERE org_id = ? AND at < ?').bind(v.org_id, now() - 120 * 864e5).run();
   return {
     review: sub.results.filter((r) => canReview(v, r.member_id)).slice(0, 100).map((r) => ({ member_id: r.member_id, date: r.date, submitted_at: r.submitted_at, late: !!r.late })),
     returned: ret.results,
+    notes: nts.results, unread: nts.results.filter((x) => !x.read_at).length, alerts, team,
   };
+});
+route('POST', '/api/notes/read', async ({ db, v, body }) => {
+  const ids = Array.isArray(body.ids) ? body.ids.filter(Number.isInteger).slice(0, 100) : [];
+  if (body.all) await db.prepare('UPDATE notes SET read_at = ? WHERE member_id = ? AND read_at IS NULL').bind(now(), v.id).run();
+  else if (ids.length) await db.prepare('UPDATE notes SET read_at = ? WHERE member_id = ? AND read_at IS NULL AND id IN (SELECT value FROM json_each(?))').bind(now(), v.id, JSON.stringify(ids)).run();
+  return { ok: true };
 });
 
 /* ───── المساحة الشخصية ─────
@@ -752,37 +826,107 @@ const MAX_DOC = 8000;
 const PID = /^[\w.-]{1,64}$/;
 
 /** توقيع خفيف (عدد + آخر تعديل لكل مجموعة) كي لا يسحب العميل كل الوثائق إن لم يتغير شيء. */
-route('GET', '/api/p-sig', async ({ db, v }) => {
+route('GET', '/api/p-sig', async (ctx) => {
+  const { db, v } = ctx;
+  await ensureDuties(db, await getSet(ctx), v.org_id, [v.id]);
   const { results } = await db.prepare('SELECT col, COUNT(*) AS n, MAX(updated_at) AS m FROM pdocs WHERE member_id = ? GROUP BY col').bind(v.id).all();
   const sig = {}; for (const c of PCOLS) sig[c] = '0:0';
   for (const r of results) if (PCOLS.has(r.col)) sig[r.col] = `${r.n}:${r.m}`;
   return { sig };
 });
 
-route('GET', '/api/p/:col', async ({ db, v, p }) => {
+route('GET', '/api/p/:col', async (ctx) => {
+  const { db, v, p } = ctx;
   if (!PCOLS.has(p.col)) fail(404, 'not-found', 'المجموعة غير معروفة.');
+  if (p.col === 'tasks') await ensureDuties(db, await getSet(ctx), v.org_id, [v.id]);
   const { results } = await db.prepare('SELECT id, data, updated_at FROM pdocs WHERE member_id = ? AND col = ? ORDER BY updated_at DESC LIMIT 3000').bind(v.id, p.col).all();
   return { docs: results.map((r) => ({ id: r.id, updated_at: r.updated_at, ...JSON.parse(r.data) })) };
 });
 
-route('POST', '/api/p', async ({ db, v, body }) => {
+/* المهمة المسندة أو الواجب داخل مهام الموظف: يعمل عليها بكل أدوات «مهامي» (اليوم، المصفوفة، التركيز، الخطوات)،
+   لكن ما حدده المدير محمي هنا. لا نرفض الطلب (المزامنة تُسقط الدفعة المرفوضة كاملة): نعيد الحقول المحمية لقيمتها
+   ونغيّر updated_at فيسحب الجهاز النسخة الصحيحة في المزامنة التالية. */
+const SRV_KEYS = ['asg', 'rv', 'doneAt', 'photos', 'warn'];
+const LOCK_KEYS = ['title', 'due', 'time', 'important', 'urgent', 'repeat', 'shared', 'est', ...SRV_KEYS];
+function mergePatch(a, b) { // RFC 7396 مثل json_patch في SQLite
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return b;
+  const out = a && typeof a === 'object' && !Array.isArray(a) ? { ...a } : {};
+  for (const [k, x] of Object.entries(b)) { if (x === null) delete out[k]; else out[k] = mergePatch(out[k], x); }
+  return out;
+}
+/** تنفيذ الموظف: الحالة والنسبة والتعثّر وتفاصيل الإنجاز. يعيد الأحداث الناتجة. */
+function applyExec(old, next, t) {
+  for (const k of LOCK_KEYS) { if (k in old) next[k] = old[k]; else delete next[k]; }
+  next.prog = Math.min(100, Math.max(0, Math.round(Number(next.prog) || 0)));
+  next.rpt = tcut(next.rpt, 1000);
+  next.blocked = tcut(next.blocked, 400);
+  const ev = [];
+  const was = isDone(old); const now_ = isDone(next);
+  if (now_ && !was) {
+    if (old.asg.photo && !(old.photos || []).length) { next.status = old.status; next.completedAt = old.completedAt ?? null; next.warn = 'photo'; }
+    else { next.doneAt = t; next.prog = 100; next.blocked = ''; next.rv = old.asg.review ? { state: 'pending' } : null; delete next.warn; ev.push('done'); }
+  } else if (!now_ && was) {
+    next.doneAt = null; if (next.rv?.state !== 'returned') next.rv = null; ev.push('reopen');
+  }
+  if (next.blocked && next.blocked !== (old.blocked || '')) ev.push('blocked');
+  return ev;
+}
+
+route('POST', '/api/p', async (ctx) => {
+  const { db, v, body } = ctx;
   const ops = Array.isArray(body.ops) ? body.ops : [];
   if (!ops.length || ops.length > MAX_OPS) fail(400, 'invalid', `من 1 إلى ${MAX_OPS} عملية في الطلب.`);
   const t = now();
-  const stmts = ops.map((o) => {
+  const tids = [...new Set(ops.filter((o) => o?.col === 'tasks' && typeof o.id === 'string' && PID.test(o.id)).map((o) => o.id))];
+  const prev = new Map();
+  if (tids.length) {
+    const { results } = await db.prepare("SELECT id, data FROM pdocs WHERE member_id = ? AND col = 'tasks' AND id IN (SELECT value FROM json_each(?))").bind(v.id, JSON.stringify(tids)).all();
+    for (const r of results) prev.set(r.id, JSON.parse(r.data));
+  }
+  const stmts = []; const audits = []; const notes = [];
+  let set = null;
+  for (const o of ops) {
     if (!o || !PCOLS.has(o.col) || typeof o.id !== 'string' || !PID.test(o.id)) fail(400, 'invalid', 'عملية غير صحيحة.');
-    if (o.op === 'del') return db.prepare('DELETE FROM pdocs WHERE member_id = ? AND col = ? AND id = ?').bind(v.id, o.col, o.id);
-    if (!['set', 'patch'].includes(o.op) || !o.data || typeof o.data !== 'object' || Array.isArray(o.data)) fail(400, 'invalid', 'عملية غير صحيحة.');
+    if (o.op !== 'del' && (!['set', 'patch'].includes(o.op) || !o.data || typeof o.data !== 'object' || Array.isArray(o.data))) fail(400, 'invalid', 'عملية غير صحيحة.');
+    const old = o.col === 'tasks' ? prev.get(o.id) : null;
+    if (old?.asg) {
+      if (o.op === 'del') { stmts.push(db.prepare("UPDATE pdocs SET updated_at = ? WHERE member_id = ? AND col = 'tasks' AND id = ?").bind(t, v.id, o.id)); continue; }
+      const { id: _i, updated_at: _u, ...data } = o.data;
+      const next = o.op === 'patch' ? mergePatch(old, data) : data;
+      const ev = applyExec(old, next, t);
+      const raw = JSON.stringify(next);
+      if (raw.length > MAX_DOC) fail(413, 'too-big', 'الوثيقة أكبر من المسموح.');
+      prev.set(o.id, next);
+      stmts.push(db.prepare("UPDATE pdocs SET data = ?, shared = 1, updated_at = ? WHERE member_id = ? AND col = 'tasks' AND id = ?").bind(raw, t, v.id, o.id));
+      if (ev.length) {
+        set ||= await getSet(ctx);
+        const ref = tref(v.id, o.id); const by = old.asg.by || v.manager_id; const kind = old.asg.kind;
+        for (const e of ev) {
+          audits.push({ a: `task.${e}`, e: ref, s: v.id, d: { title: old.title, kind, ...(e === 'blocked' ? { reason: next.blocked } : {}), ...(e === 'done' && next.rpt ? { rpt: next.rpt } : {}) } });
+          // الواجب الدوري المنجز لا يُشغل المدير يوميًا؛ التعثّر يصله دائمًا
+          if (e === 'done' && kind === 'assign' && by && set.rules.done) notes.push({ m: by, k: 'done', o: v.id, t: o.id, x: `${v.name} أنجز: ${old.title}${old.asg.review ? ' (بانتظار اعتمادك)' : ''}`, b: v.id });
+          if (e === 'blocked' && by && set.rules.blocked) notes.push({ m: by, k: 'blocked', o: v.id, t: o.id, x: `${v.name} متعثّر في «${old.title}»: ${next.blocked}`, b: v.id });
+          if (e === 'done' || e === 'blocked') emit(ctx, `task.${e}`, { member: { id: v.id, name: v.name }, task: { id: o.id, title: old.title, kind, due: old.due }, ...(e === 'blocked' ? { reason: next.blocked } : { report: next.rpt || '' }) },
+            e === 'done' ? `✔ ${v.name} أنجز «${old.title}»` : `⚠ ${v.name} متعثّر في «${old.title}»: ${next.blocked}`);
+        }
+      }
+      continue;
+    }
+    if (o.col === 'tasks' && /^[ad]\./.test(o.id)) continue; // معرّفات محجوزة للمهام المسندة والواجبات
+    if (o.op === 'del') { stmts.push(db.prepare('DELETE FROM pdocs WHERE member_id = ? AND col = ? AND id = ?').bind(v.id, o.col, o.id)); continue; }
     const { id: _i, updated_at: _u, ...data } = o.data;
+    if (o.col === 'tasks') for (const k of SRV_KEYS) delete data[k]; // لا تُزوَّر مهمة مسندة أو اعتماد
     const raw = JSON.stringify(data);
     if (raw.length > MAX_DOC) fail(413, 'too-big', 'الوثيقة أكبر من المسموح.');
     const canShare = o.col === 'tasks' ? 1 : 0;
     const merged = o.op === 'patch' ? 'json_patch(pdocs.data, excluded.data)' : 'excluded.data';
-    return db.prepare(`INSERT INTO pdocs (member_id, col, id, data, shared, updated_at) VALUES (?1, ?2, ?3, ?4, CASE WHEN ?6 = 1 AND json_extract(?4, '$.shared') = 1 THEN 1 ELSE 0 END, ?5)
+    stmts.push(db.prepare(`INSERT INTO pdocs (member_id, col, id, data, shared, updated_at) VALUES (?1, ?2, ?3, ?4, CASE WHEN ?6 = 1 AND json_extract(?4, '$.shared') = 1 THEN 1 ELSE 0 END, ?5)
       ON CONFLICT(member_id, col, id) DO UPDATE SET data = ${merged}, updated_at = excluded.updated_at,
-        shared = CASE WHEN ?6 = 1 AND json_extract(${merged}, '$.shared') = 1 THEN 1 ELSE 0 END`).bind(v.id, o.col, o.id, raw, t, canShare);
-  });
-  await db.batch(stmts);
+        shared = CASE WHEN ?6 = 1 AND json_extract(${merged}, '$.shared') = 1 THEN 1 ELSE 0 END`).bind(v.id, o.col, o.id, raw, t, canShare));
+  }
+  if (audits.length) stmts.push(auditsQ(db, v.org_id, v.id, audits));
+  if (notes.length) stmts.push(notesQ(db, v.org_id, notes));
+  if (stmts.length) await db.batch(stmts);
   return { ok: true, n: ops.length, at: t };
 });
 
@@ -810,6 +954,656 @@ route('GET', '/api/audit', async ({ db, v, q }) => {
   }
   return { rows: rows.map((a) => ({ at: a.at, action: a.action, entity: a.entity, subject_id: a.subject_id, actor: a.actor, data: JSON.parse(a.data) })) };
 });
+
+/* ═════════════ إعدادات الجهة ومفاتيح التشغيل ═════════════
+   كل ما يحتاج قرارًا من تقنية المعلومات (الذكاء الاصطناعي، الربط الخارجي، مفاتيح API، التقويم) له مفتاح هنا.
+   المعطّل لا يُحذف كوده: الخادم يرفض مساره فقط. الافتراضي: كل ما قد يخرج من شبكة الجهة معطّل. */
+const FEATS = ['ai', 'comments', 'photos', 'webhooks', 'api', 'ics'];
+const RULES = ['assigned', 'done', 'blocked', 'returned', 'comment', 'overdue', 'dueSoon', 'report'];
+const EVENTS = ['task.assigned', 'task.done', 'task.blocked', 'task.approved', 'task.returned', 'task.cancelled', 'comment.created', 'report.submitted'];
+const FREQS = ['daily', 'weekly', 'monthly'];
+const DEF_SET = {
+  weekend: [5], tz: 180, dayMin: 420, reportHour: 16, photoDays: 180,
+  feat: { ai: false, comments: true, photos: true, webhooks: false, api: false, ics: false },
+  rules: Object.fromEntries(RULES.map((k) => [k, true])), hooks: [],
+};
+const int = (x, lo, hi, d) => (Number.isInteger(x) && x >= lo && x <= hi ? x : d);
+function mergeSet(raw) {
+  let s = {}; try { s = JSON.parse(raw || '{}') || {}; } catch {}
+  return { ...DEF_SET, ...s, feat: { ...DEF_SET.feat, ...(s.feat || {}) }, rules: { ...DEF_SET.rules, ...(s.rules || {}) }, hooks: Array.isArray(s.hooks) ? s.hooks : [] };
+}
+async function getSet(ctx) {
+  if (!ctx.set) {
+    const r = await ctx.db.prepare('SELECT name, settings FROM orgs WHERE id = ?').bind(ctx.v.org_id).first();
+    ctx.set = mergeSet(r?.settings); ctx.orgName = r?.name || '';
+  }
+  return ctx.set;
+}
+const pubSet = (s) => ({ weekend: s.weekend, tz: s.tz, dayMin: s.dayMin, reportHour: s.reportHour, photoDays: s.photoDays, feat: s.feat, rules: s.rules });
+async function needFeat(ctx, k, msg) { if (!(await getSet(ctx)).feat[k]) fail(403, 'feature-off', msg || 'هذه الميزة معطّلة في إعدادات الجهة.'); }
+function cleanSet(b, cur) {
+  const o = mergeSet(JSON.stringify(cur));
+  if (Array.isArray(b.weekend)) o.weekend = [...new Set(b.weekend.filter((x) => Number.isInteger(x) && x >= 0 && x <= 6))].slice(0, 3);
+  o.tz = int(b.tz, -720, 840, o.tz); o.dayMin = int(b.dayMin, 60, 960, o.dayMin);
+  o.reportHour = int(b.reportHour, -1, 23, o.reportHour); o.photoDays = int(b.photoDays, 7, 3650, o.photoDays);
+  for (const k of FEATS) if (typeof b.feat?.[k] === 'boolean') o.feat[k] = b.feat[k];
+  for (const k of RULES) if (typeof b.rules?.[k] === 'boolean') o.rules[k] = b.rules[k];
+  if (Array.isArray(b.hooks)) {
+    const old = new Map(o.hooks.map((h) => [h.id, h]));
+    o.hooks = b.hooks.slice(0, 5).map((h) => {
+      let u; try { u = new URL(String(h?.url || '')); } catch { return null; }
+      if (!['https:', 'http:'].includes(u.protocol) || u.href.length > 400) return null;
+      const prev = old.get(h.id);
+      return { id: prev?.id || id(), name: text(h.name, 60), url: u.href, events: (Array.isArray(h.events) ? h.events : []).filter((e) => EVENTS.includes(e)), on: h.on !== false, secret: prev?.secret || 'whs_' + b64e(rand(24)) };
+    }).filter(Boolean);
+  }
+  return o;
+}
+const adminSet = (ctx, s) => ({ ...s, events: EVENTS, ai_server: aiProvider(ctx.env) });
+route('GET', '/api/settings', async (ctx) => { const s = await getSet(ctx); return ctx.v.isAdmin ? adminSet(ctx, s) : pubSet(s); });
+route('PUT', '/api/settings', async (ctx) => {
+  const { db, v, body } = ctx;
+  needAdmin(v);
+  const cur = await getSet(ctx);
+  const next = cleanSet(body, cur);
+  const diff = {};
+  for (const k of ['weekend', 'tz', 'dayMin', 'reportHour', 'photoDays', 'feat', 'rules']) if (JSON.stringify(cur[k]) !== JSON.stringify(next[k])) diff[k] = [cur[k], next[k]];
+  const hk = (s) => JSON.stringify(s.hooks.map((h) => [h.url, h.events, h.on]));
+  if (hk(cur) !== hk(next)) diff.hooks = next.hooks.map((h) => `${h.on ? '' : '(معطّل) '}${h.url}`);
+  if (Object.keys(diff).length) {
+    await db.batch([
+      db.prepare('UPDATE orgs SET settings = ? WHERE id = ?').bind(JSON.stringify(next), v.org_id),
+      auditQ(db, v.org_id, v.id, 'settings.update', 'org', v.org_id, null, diff),
+    ]);
+  }
+  ctx.set = next; dutyMemo.clear();
+  return adminSet(ctx, next);
+});
+
+/* ───── الأيام بتوقيت الجهة ───── */
+const wdOf = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
+const isOff = (s, d) => s.weekend.includes(wdOf(d));
+const localDay = (s, ms) => dayOf(ms + s.tz * 60000);
+const orgToday = (s) => localDay(s, now());
+/** فترة الواجب التي يقع فيها اليوم. الأسبوع يبدأ السبت؛ الموعد آخر يوم عمل في الفترة. */
+function period(freq, d, s) {
+  if (freq === 'daily') return isOff(s, d) ? null : { key: d, start: d, due: d };
+  let start, end;
+  if (freq === 'weekly') { start = addDays(d, -((wdOf(d) + 1) % 7)); end = addDays(start, 6); }
+  else if (freq === 'monthly') { start = d.slice(0, 8) + '01'; end = dayOf(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)); }
+  else return null;
+  let due = end; while (due > start && isOff(s, due)) due = addDays(due, -1);
+  return { key: (freq === 'weekly' ? 'w' : 'm') + start, start, due };
+}
+function workDays(s, from, to) { let n = 0; for (let d = from; d <= to; d = addDays(d, 1)) if (!isOff(s, d)) n++; return n; }
+
+/* ───── المهام المسندة والواجبات: أدوات مشتركة ───── */
+const baseTask = (f) => ({
+  title: '', notes: '', areaId: null, goalId: null, urgent: false, important: false, due: null, status: 'todo',
+  focusDate: null, focusOrder: 0, slips: 0, completedAt: null, steps: [], repeat: null, assignee: null, assignedAt: null, followUp: null,
+  time: null, remind: null, intent: '', est: null, snoozes: 0, snoozeUntil: null, shared: true, createdAt: new Date().toISOString(), ...f,
+});
+// الأولوية = مربع المصفوفة نفسه (لا نظام ثانٍ): حرجة = مهمة وعاجلة، مهمة = مهمة، عادية = غير ذلك
+const fromPrio = (p) => ({ important: p >= 2, urgent: p >= 3 });
+const prioOf = (t) => (t.important ? (t.urgent ? 3 : 2) : t.urgent ? 2 : 1);
+const tref = (owner, tid) => `${owner}/${tid}`;
+const isDone = (t) => t.status === 'done';
+const emit = (ctx, event, data, msg) => (ctx.events ||= []).push({ event, data, text: msg });
+const notesQ = (db, orgId, rows) => db.prepare(`INSERT INTO notes (org_id, member_id, kind, owner_id, task_id, text, by_id, at)
+  SELECT ?1, json_extract(value, '$.m'), json_extract(value, '$.k'), json_extract(value, '$.o'), json_extract(value, '$.t'), json_extract(value, '$.x'), json_extract(value, '$.b'), ?2 FROM json_each(?3)`)
+  .bind(orgId, now(), JSON.stringify(rows.map((r) => ({ ...r, x: tcut(r.x, 300) }))));
+const auditsQ = (db, orgId, actorId, rows) => db.prepare(`INSERT INTO audit (org_id, at, actor_id, action, entity, entity_id, subject_id, data)
+  SELECT ?1, ?2, ?3, json_extract(value, '$.a'), 'task', json_extract(value, '$.e'), json_extract(value, '$.s'), json_extract(value, '$.d') FROM json_each(?4)`)
+  .bind(orgId, now(), actorId, JSON.stringify(rows.map((r) => ({ ...r, d: JSON.stringify(r.d || {}).slice(0, 8000) }))));
+
+/** واجبات التوصيف: تُولَّد عند القراءة بمعرّف ثابت لكل فترة (بلا Cron)، وتُزال المفتوحة من فترة مضت إن لم يُلمس شيء منها
+   (تبقى محسوبة «فائتة» في المؤشرات من التوصيف نفسه). */
+const dutyMemo = new Map();
+async function ensureDuties(db, set, orgId, mids) {
+  const day = orgToday(set);
+  const todo = mids.filter((m) => !dutyMemo.has(`${m}|${day}`));
+  if (!todo.length) return;
+  const { results } = await db.prepare(`SELECT m.id AS mid, r.id AS rid, r.title, r.detail, r.freq, r.prio, r.est FROM members m
+    JOIN responsibilities r ON r.position_id = m.position_id AND r.active = 1 AND r.freq != ''
+    WHERE m.org_id = ? AND m.status != 'disabled' AND m.id IN (SELECT value FROM json_each(?))`).bind(orgId, JSON.stringify(todo)).all();
+  const t = now();
+  const rows = [];
+  for (const x of results) {
+    const p = period(x.freq, day, set); if (!p) continue;
+    rows.push({ m: x.mid, id: `d.${x.rid}.${p.key}`, d: JSON.stringify(baseTask({ title: x.title, due: p.due, est: x.est || null, ...fromPrio(x.prio || 1),
+      asg: { kind: 'duty', rid: x.rid, freq: x.freq, period: p.key, start: p.start, by: null, at: t, desc: x.detail || '', review: false, photo: false } })) });
+  }
+  const stmts = [db.prepare(`DELETE FROM pdocs WHERE col = 'tasks' AND id LIKE 'd.%' AND member_id IN (SELECT value FROM json_each(?1))
+    AND json_extract(data, '$.due') < ?2 AND json_extract(data, '$.status') != 'done' AND json_extract(data, '$.photos') IS NULL
+    AND COALESCE(json_extract(data, '$.prog'), 0) = 0 AND COALESCE(json_extract(data, '$.rpt'), '') = '' AND COALESCE(json_extract(data, '$.blocked'), '') = ''`).bind(JSON.stringify(todo), day)];
+  if (rows.length) stmts.push(db.prepare(`INSERT INTO pdocs (member_id, col, id, data, shared, updated_at)
+    SELECT json_extract(value, '$.m'), 'tasks', json_extract(value, '$.id'), json_extract(value, '$.d'), 1, ?1 FROM json_each(?2) WHERE 1
+    ON CONFLICT(member_id, col, id) DO NOTHING`).bind(t, JSON.stringify(rows)));
+  await db.batch(stmts);
+  if (dutyMemo.size > 5000) dutyMemo.clear();
+  for (const m of todo) dutyMemo.set(`${m}|${day}`, 1);
+}
+
+/** المهام المسندة والواجبات لمن أراهم (بلا مهامي أنا). */
+async function teamAsg(ctx, { member, kind } = {}) {
+  const { db, v } = ctx;
+  if (member && !canSee(v, member)) fail(403, 'forbidden', 'لا تملك صلاحية عرض هذا الموظف.');
+  const { results } = member
+    ? await db.prepare("SELECT member_id, id, data, updated_at FROM pdocs WHERE member_id = ? AND col = 'tasks' AND (id LIKE 'a.%' OR id LIKE 'd.%')").bind(member).all()
+    : await db.prepare("SELECT p.member_id, p.id, p.data, p.updated_at FROM pdocs p JOIN members m ON m.id = p.member_id WHERE m.org_id = ? AND p.col = 'tasks' AND (p.id LIKE 'a.%' OR p.id LIKE 'd.%') LIMIT 8000").bind(v.org_id).all();
+  return results.filter((r) => r.member_id !== v.id && canSee(v, r.member_id))
+    .map((r) => ({ member_id: r.member_id, id: r.id, updated_at: r.updated_at, ...JSON.parse(r.data) }))
+    .filter((x) => x.asg && (!kind || x.asg.kind === kind));
+}
+const pubTask = (x) => ({
+  member_id: x.member_id, id: x.id, title: x.title, due: x.due, time: x.time || null, status: x.status, prio: prioOf(x), est: x.est || null,
+  spent: x.spent || 0, prog: x.prog || 0, blocked: x.blocked || '', rpt: x.rpt || '', photos: x.photos || [], rv: x.rv || null,
+  asg: x.asg, doneAt: x.doneAt || null, warn: x.warn || null, steps: (x.steps || []).map((s) => ({ title: s.title, done: !!s.done })), updated_at: x.updated_at,
+});
+async function loadTask(db, owner, tid) {
+  const r = await db.prepare("SELECT data, shared, updated_at FROM pdocs WHERE member_id = ? AND col = 'tasks' AND id = ?").bind(owner, tid).first();
+  return r ? { t: JSON.parse(r.data), shared: !!r.shared, updated_at: r.updated_at } : null;
+}
+const saveTaskQ = (db, owner, tid, t) => db.prepare("UPDATE pdocs SET data = ?, updated_at = ? WHERE member_id = ? AND col = 'tasks' AND id = ?").bind(JSON.stringify(t), now(), owner, tid);
+/** مهمة مسندة/واجب لموظف تحتي (للمدير، ولمن فوقه، وللمسؤول). */
+async function managedTask(ctx) {
+  const { db, v, p } = ctx;
+  if (!canReview(v, p.owner)) fail(403, 'forbidden', 'لا تملك صلاحية على مهام هذا الموظف.');
+  const x = await loadTask(db, p.owner, p.tid);
+  if (!x || !x.t.asg) fail(404, 'not-found', 'المهمة غير موجودة.');
+  return x.t;
+}
+/** من يقرأ المهمة ويعلّق عليها: صاحبها، ومن فوقه إن كانت ظاهرة لهم. */
+async function taskAccess(ctx, owner, tid) {
+  const { db, v } = ctx;
+  if (owner !== v.id && !canSee(v, owner)) fail(403, 'forbidden', 'لا تملك صلاحية على هذه المهمة.');
+  const x = await loadTask(db, owner, tid);
+  if (!x) fail(404, 'not-found', 'المهمة غير موجودة.');
+  if (owner !== v.id && !x.shared) fail(403, 'forbidden', 'هذه المهمة خاصة بصاحبها.');
+  return x;
+}
+
+/* ───── الإسناد: المدير ينشئ مهمة تصل لمهام الموظف مباشرة ───── */
+function asgFields(b, old = null) {
+  const has = (k) => b[k] !== undefined;
+  let due = old ? old.due ?? null : null;
+  if (has('due')) { if (b.due === null || b.due === '') due = null; else if (isDay(b.due)) due = b.due; else fail(400, 'invalid', 'الموعد غير صحيح.'); }
+  return {
+    title: has('title') || !old ? text(b.title, 200, { required: true, label: 'عنوان المهمة' }) : old.title,
+    desc: has('desc') ? text(b.desc, 2000) : old?.asg?.desc || '',
+    due,
+    time: has('time') ? (TIME.test(b.time || '') ? b.time : null) : old?.time ?? null,
+    prio: has('prio') ? int(b.prio, 1, 3, 1) : old ? prioOf(old) : 1,
+    est: has('est') ? int(b.est, 5, 960, null) : old?.est ?? null,
+    review: has('review') ? !!b.review : !!old?.asg?.review,
+    photo: has('photo') ? !!b.photo : !!old?.asg?.photo,
+  };
+}
+route('POST', '/api/assign', async (ctx) => {
+  const { db, v, body } = ctx;
+  const to = [...new Set(Array.isArray(body.to) ? body.to.filter((x) => typeof x === 'string') : [])];
+  if (!to.length || to.length > 50) fail(400, 'invalid', 'اختر من موظف واحد إلى ٥٠.');
+  for (const mid of to) if (!canReview(v, mid)) fail(403, 'forbidden', 'تُسند المهام لمن يتبعك فقط.');
+  const { results: ms } = await db.prepare('SELECT id, name, status FROM members WHERE org_id = ? AND id IN (SELECT value FROM json_each(?))').bind(v.org_id, JSON.stringify(to)).all();
+  if (ms.length !== to.length || ms.some((m) => m.status === 'disabled')) fail(400, 'invalid', 'موظف غير صحيح أو معطّل.');
+  const f = asgFields(body);
+  const steps = (Array.isArray(body.steps) ? body.steps : []).map((s) => text(s, 160)).filter(Boolean).slice(0, 12);
+  const t = now(); const group = id();
+  const rows = ms.map((m) => {
+    const tid = 'a.' + id();
+    return { m: m.id, id: tid, name: m.name, d: JSON.stringify(baseTask({
+      title: f.title, due: f.due, time: f.time, est: f.est, ...fromPrio(f.prio),
+      steps: steps.map((s) => ({ id: id().slice(0, 8), title: s, done: false })),
+      asg: { kind: 'assign', by: v.id, byName: v.name, at: t, desc: f.desc, review: f.review, photo: f.photo, group, n: ms.length },
+    })) };
+  });
+  const set = await getSet(ctx);
+  const stmts = [
+    db.prepare(`INSERT INTO pdocs (member_id, col, id, data, shared, updated_at) SELECT json_extract(value, '$.m'), 'tasks', json_extract(value, '$.id'), json_extract(value, '$.d'), 1, ?1 FROM json_each(?2)`).bind(t, JSON.stringify(rows)),
+    auditsQ(db, v.org_id, v.id, rows.map((r) => ({ a: 'task.assign', e: tref(r.m, r.id), s: r.m, d: { title: f.title, due: f.due, prio: f.prio } }))),
+  ];
+  if (set.rules.assigned) stmts.push(notesQ(db, v.org_id, rows.map((r) => ({ m: r.m, k: 'assigned', o: r.m, t: r.id, x: `أسند إليك ${v.name}: ${f.title}`, b: v.id }))));
+  await db.batch(stmts);
+  emit(ctx, 'task.assigned', { by: { id: v.id, name: v.name }, title: f.title, due: f.due, prio: f.prio, to: rows.map((r) => ({ member_id: r.m, name: r.name, task_id: r.id })) },
+    `📌 ${v.name} أسند «${f.title}» إلى ${rows.map((r) => r.name).join('، ')}${f.due ? ` (موعدها ${f.due})` : ''}`);
+  return { ids: rows.map((r) => ({ member_id: r.m, id: r.id })), group };
+}, { api: true });
+
+route('PATCH', '/api/assign/:owner/:tid', async (ctx) => {
+  const { db, v, p, body } = ctx;
+  const t = await managedTask(ctx);
+  if (t.asg.kind !== 'assign') fail(400, 'invalid', 'الواجب الدوري يُعدَّل من التوصيف الوظيفي.');
+  const f = asgFields(body, t);
+  const next = { ...t, title: f.title, due: f.due, time: f.time, est: f.est, ...fromPrio(f.prio), asg: { ...t.asg, desc: f.desc, review: f.review, photo: f.photo } };
+  const diff = {};
+  for (const k of ['title', 'due', 'time', 'est']) if ((t[k] ?? null) !== (next[k] ?? null)) diff[k] = [t[k] ?? null, next[k] ?? null];
+  if (prioOf(t) !== f.prio) diff.prio = [prioOf(t), f.prio];
+  for (const k of ['desc', 'review', 'photo']) if ((t.asg[k] ?? '') !== (next.asg[k] ?? '')) diff[k] = [t.asg[k] ?? null, next.asg[k]];
+  if (!Object.keys(diff).length) return { ok: true };
+  const set = await getSet(ctx);
+  const stmts = [saveTaskQ(db, p.owner, p.tid, next), auditsQ(db, v.org_id, v.id, [{ a: 'task.edit', e: tref(p.owner, p.tid), s: p.owner, d: diff }])];
+  if (set.rules.assigned) stmts.push(notesQ(db, v.org_id, [{ m: p.owner, k: 'edited', o: p.owner, t: p.tid, x: `عدّل ${v.name} المهمة: ${next.title}`, b: v.id }]));
+  await db.batch(stmts);
+  return { ok: true };
+}, { api: true });
+
+route('POST', '/api/assign/:owner/:tid/cancel', async (ctx) => {
+  const { db, v, p } = ctx;
+  const t = await managedTask(ctx);
+  if (t.asg.kind !== 'assign') fail(400, 'invalid', 'الواجب الدوري يُلغى من التوصيف الوظيفي.');
+  const set = await getSet(ctx);
+  const stmts = [
+    db.prepare("DELETE FROM pdocs WHERE member_id = ? AND col = 'tasks' AND id = ?").bind(p.owner, p.tid),
+    db.prepare('DELETE FROM files WHERE owner_id = ? AND task_id = ?').bind(p.owner, p.tid),
+    db.prepare('DELETE FROM comments WHERE owner_id = ? AND task_id = ?').bind(p.owner, p.tid),
+    auditsQ(db, v.org_id, v.id, [{ a: 'task.cancel', e: tref(p.owner, p.tid), s: p.owner, d: { title: t.title } }]),
+  ];
+  if (set.rules.assigned) stmts.push(notesQ(db, v.org_id, [{ m: p.owner, k: 'cancelled', o: p.owner, t: p.tid, x: `ألغى ${v.name} المهمة: ${t.title}`, b: v.id }]));
+  await db.batch(stmts);
+  emit(ctx, 'task.cancelled', { by: { id: v.id, name: v.name }, member_id: p.owner, task: { id: p.tid, title: t.title } }, `✖ ${v.name} ألغى «${t.title}»`);
+  return { ok: true };
+}, { api: true });
+
+/** اعتماد المنجز، أو إعادته بملاحظة (تعود مفتوحة عند الموظف). */
+route('POST', '/api/assign/:owner/:tid/review', async (ctx) => {
+  const { db, v, p, body } = ctx;
+  const t = await managedTask(ctx);
+  const note = text(body.note, 1000); const t0 = now();
+  if (!isDone(t)) fail(409, 'state', 'تُراجع المهمة بعد أن يرفعها الموظف منجزة.');
+  let next;
+  if (body.action === 'approve') next = { ...t, rv: { state: 'ok', by: v.id, byName: v.name, at: t0, note } };
+  else if (body.action === 'return') {
+    if (!note) fail(400, 'invalid', 'اكتب ما المطلوب تعديله.');
+    next = { ...t, status: 'todo', completedAt: null, doneAt: null, prog: Math.min(t.prog || 0, 90), rv: { state: 'returned', by: v.id, byName: v.name, at: t0, note } };
+  } else fail(400, 'invalid', 'إجراء غير معروف.');
+  const set = await getSet(ctx);
+  const ok = body.action === 'approve';
+  const stmts = [saveTaskQ(db, p.owner, p.tid, next), auditsQ(db, v.org_id, v.id, [{ a: ok ? 'task.approve' : 'task.return', e: tref(p.owner, p.tid), s: p.owner, d: { title: t.title, note } }])];
+  if (set.rules.returned) stmts.push(notesQ(db, v.org_id, [{ m: p.owner, k: ok ? 'approved' : 'returned', o: p.owner, t: p.tid, x: ok ? `اعتمد ${v.name}: ${t.title}` : `أعاد ${v.name} «${t.title}» للتعديل: ${note}`, b: v.id }]));
+  await db.batch(stmts);
+  emit(ctx, ok ? 'task.approved' : 'task.returned', { by: { id: v.id, name: v.name }, member_id: p.owner, task: { id: p.tid, title: t.title }, note }, ok ? `✔ ${v.name} اعتمد «${t.title}»` : `↩ ${v.name} أعاد «${t.title}»: ${note}`);
+  return { status: next.status, rv: next.rv };
+}, { api: true });
+
+/** المهام المسندة والواجبات لفريقي. kind=assign|duty، member، state=open|done */
+route('GET', '/api/assigned', async (ctx) => {
+  const { q } = ctx;
+  const member = q.get('member') || null;
+  const kind = ['assign', 'duty'].includes(q.get('kind')) ? q.get('kind') : null;
+  const set = await getSet(ctx);
+  const scope = member ? [member] : [...(ctx.v.isAdmin ? (await ctx.db.prepare("SELECT id FROM members WHERE org_id = ? AND status = 'active'").bind(ctx.v.org_id).all()).results.map((r) => r.id) : ctx.v.subs)];
+  await ensureDuties(ctx.db, set, ctx.v.org_id, scope.filter((x) => x !== ctx.v.id));
+  let list = await teamAsg(ctx, { member, kind });
+  const st = q.get('state');
+  if (st === 'open') list = list.filter((x) => !isDone(x)); else if (st === 'done') list = list.filter(isDone);
+  const { results: cc } = await ctx.db.prepare('SELECT owner_id, task_id, COUNT(*) AS n FROM comments WHERE org_id = ? GROUP BY owner_id, task_id').bind(ctx.v.org_id).all();
+  const cmap = new Map(cc.map((r) => [tref(r.owner_id, r.task_id), r.n]));
+  return { today: orgToday(set), tasks: list.slice(0, 3000).map((x) => ({ ...pubTask(x), comments: cmap.get(tref(x.member_id, x.id)) || 0 })) };
+}, { api: true });
+
+/** تفاصيل مهمة: لصاحبها، ولمن فوقه إن كانت ظاهرة. مع التعليقات والمرفقات وسجلها. */
+route('GET', '/api/task/:owner/:tid', async (ctx) => {
+  const { db, v, p } = ctx;
+  const x = await taskAccess(ctx, p.owner, p.tid);
+  const [com, fs, tr] = await db.batch([
+    db.prepare('SELECT c.id, c.author_id, c.body, c.file_id, c.at, m.name AS author FROM comments c LEFT JOIN members m ON m.id = c.author_id WHERE c.owner_id = ? AND c.task_id = ? ORDER BY c.at LIMIT 300').bind(p.owner, p.tid),
+    db.prepare('SELECT id, kind, mime, size, by_id, at FROM files WHERE owner_id = ? AND task_id = ? ORDER BY at').bind(p.owner, p.tid),
+    db.prepare("SELECT a.at, a.action, a.data, m.name AS actor FROM audit a LEFT JOIN members m ON m.id = a.actor_id WHERE a.org_id = ? AND a.entity = 'task' AND a.entity_id = ? ORDER BY a.at LIMIT 200").bind(v.org_id, tref(p.owner, p.tid)),
+  ]);
+  return {
+    task: { ...pubTask({ member_id: p.owner, id: p.tid, updated_at: x.updated_at, ...x.t }), ...(p.owner === v.id ? { notes: x.t.notes || '' } : {}) },
+    comments: com.results, files: fs.results,
+    trail: tr.results.map((a) => ({ at: a.at, action: a.action, actor: a.actor, data: JSON.parse(a.data) })),
+    can_review: !!x.t.asg && canReview(v, p.owner), can_edit: !!x.t.asg && x.t.asg.kind === 'assign' && canReview(v, p.owner),
+  };
+}, { api: true });
+
+/* ───── التعليقات: النقاش داخل المهمة بدل واتساب ───── */
+route('POST', '/api/task/:owner/:tid/comments', async (ctx) => {
+  const { db, v, p, body } = ctx;
+  await needFeat(ctx, 'comments', 'التعليقات معطّلة في إعدادات الجهة.');
+  const x = await taskAccess(ctx, p.owner, p.tid);
+  const b = text(body.body, 2000);
+  const fileId = typeof body.file === 'string' ? body.file : null;
+  if (!b && !fileId) fail(400, 'invalid', 'اكتب التعليق.');
+  if (fileId && !(await db.prepare('SELECT 1 FROM files WHERE id = ? AND owner_id = ? AND task_id = ? AND by_id = ?').bind(fileId, p.owner, p.tid, v.id).first())) fail(400, 'invalid', 'المرفق غير صحيح.');
+  const { results: prev } = await db.prepare('SELECT DISTINCT author_id FROM comments WHERE owner_id = ? AND task_id = ?').bind(p.owner, p.tid).all();
+  // يُنبَّه: صاحب المهمة، ومن أسندها، ومن علّق قبل، ومن ذُكر بـ@اسمه إن كان يملك رؤيتها
+  const targets = new Set([p.owner, x.t.asg?.by, ...prev.map((r) => r.author_id)].filter(Boolean));
+  if (b.includes('@')) {
+    const { results: mem } = await db.prepare("SELECT id, name, role FROM members WHERE org_id = ? AND status = 'active'").bind(v.org_id).all();
+    for (const m of mem.filter((m) => b.includes('@' + m.name) && !targets.has(m.id)).slice(0, 5)) {
+      if (m.id === p.owner || m.role === 'admin' || (await subtree(db, v.org_id, m.id)).has(p.owner)) targets.add(m.id);
+    }
+  }
+  targets.delete(v.id);
+  const set = await getSet(ctx);
+  const cid = id(); const t = now();
+  const stmts = [db.prepare('INSERT INTO comments (id, org_id, owner_id, task_id, author_id, body, file_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(cid, v.org_id, p.owner, p.tid, v.id, b, fileId, t)];
+  if (set.rules.comment && targets.size) stmts.push(notesQ(db, v.org_id, [...targets].map((m) => ({ m, k: 'comment', o: p.owner, t: p.tid, x: `${v.name} على «${x.t.title}»: ${b || '(صورة)'}`, b: v.id }))));
+  await db.batch(stmts);
+  emit(ctx, 'comment.created', { by: { id: v.id, name: v.name }, member_id: p.owner, task: { id: p.tid, title: x.t.title }, body: b }, `💬 ${v.name} على «${x.t.title}»: ${b}`);
+  return { id: cid, at: t };
+});
+
+/* ───── المرفقات: صور إثبات الإنجاز (تُضغط في الجهاز قبل الرفع) ───── */
+const MAX_FILE = 400_000;
+const MIME = { 'image/jpeg': [0xff, 0xd8, 0xff], 'image/png': [0x89, 0x50, 0x4e, 0x47], 'image/webp': [0x52, 0x49, 0x46, 0x46] };
+const MAX_PHOTOS = 4;
+route('POST', '/api/files', async (ctx) => {
+  const { db, v, q, req, bin } = ctx;
+  const owner = q.get('owner') || v.id; const tid = q.get('task') || '';
+  const kind = q.get('kind') === 'comment' ? 'comment' : 'photo';
+  await needFeat(ctx, kind === 'photo' ? 'photos' : 'comments', kind === 'photo' ? 'صور الإنجاز معطّلة في إعدادات الجهة.' : 'التعليقات معطّلة في إعدادات الجهة.');
+  const mime = (req.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const sig = MIME[mime];
+  if (!sig) fail(400, 'invalid', 'الصور فقط: JPEG أو PNG أو WebP.');
+  if (!bin?.length || sig.some((b, i) => bin[i] !== b)) fail(400, 'invalid', 'الملف ليس صورة صالحة.');
+  const x = await taskAccess(ctx, owner, tid);
+  if (kind === 'photo') {
+    if (owner !== v.id) fail(403, 'forbidden', 'صاحب المهمة فقط يرفق صور الإنجاز.');
+    if (!x.t.asg) fail(400, 'invalid', 'صور الإنجاز للمهام المسندة والواجبات.');
+    if ((x.t.photos || []).length >= MAX_PHOTOS) fail(400, 'too-many', `الحد ${MAX_PHOTOS} صور للمهمة.`);
+  }
+  const set = await getSet(ctx);
+  const fid = id(); const t = now();
+  const stmts = [db.prepare('INSERT INTO files (id, org_id, owner_id, task_id, by_id, kind, mime, size, data, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(fid, v.org_id, owner, tid, v.id, kind, mime, bin.length, blobArg(bin), t)];
+  if (kind === 'photo') {
+    const next = { ...x.t, photos: [...(x.t.photos || []), fid] };
+    if (next.warn === 'photo') delete next.warn;
+    stmts.push(saveTaskQ(db, owner, tid, next));
+  }
+  // الاحتفاظ: الصور الأقدم من المدة المحددة تُحذف (قاعدة Cloudflare المجانية محدودة الحجم)
+  if (Math.random() < 0.05) stmts.push(db.prepare('DELETE FROM files WHERE org_id = ? AND at < ?').bind(v.org_id, t - set.photoDays * 864e5));
+  await db.batch(stmts);
+  return { id: fid, size: bin.length };
+}, { bin: MAX_FILE });
+route('GET', '/api/files/:fid', async (ctx) => {
+  const { db, v, p } = ctx;
+  const f = await db.prepare('SELECT * FROM files WHERE id = ? AND org_id = ?').bind(p.fid, v.org_id).first();
+  if (!f) fail(404, 'not-found', 'المرفق غير موجود أو انتهت مدة الاحتفاظ به.');
+  await taskAccess(ctx, f.owner_id, f.task_id);
+  return new Response(toBytes(f.data), { headers: { 'content-type': f.mime, 'cache-control': 'private, max-age=604800, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'" } });
+});
+route('POST', '/api/files/:fid/delete', async (ctx) => {
+  const { db, v, p } = ctx;
+  const f = await db.prepare('SELECT * FROM files WHERE id = ? AND org_id = ?').bind(p.fid, v.org_id).first();
+  if (!f || f.by_id !== v.id) fail(404, 'not-found', 'المرفق غير موجود.');
+  const x = await loadTask(db, f.owner_id, f.task_id);
+  const stmts = [db.prepare('DELETE FROM files WHERE id = ?').bind(f.id)];
+  if (x && f.kind === 'photo') {
+    if (isDone(x.t)) fail(409, 'locked', 'لا تُحذف صور مهمة منجزة. أعد فتحها أولًا.');
+    stmts.push(saveTaskQ(db, f.owner_id, f.task_id, { ...x.t, photos: (x.t.photos || []).filter((z) => z !== f.id) }));
+  }
+  await db.batch(stmts);
+  return { ok: true };
+});
+// D1 يقبل ArrayBuffer للـBLOB ويعيده مصفوفة أرقام؛ node:sqlite (سيرفر الجهة) يقبل ويعيد Uint8Array
+let isD1 = false;
+const blobArg = (u8) => (isD1 ? u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) : u8);
+const toBytes = (x) => (x instanceof Uint8Array ? x : new Uint8Array(x));
+
+/* ═════════════ المؤشرات: ما يراه المدير ═════════════
+   تُحسب في الخادم من المهام المسندة والواجبات فقط (المهام الشخصية خارجها)، وبقواعد معلنة لا بنموذج غامض:
+   • الإنجاز = المنجز ÷ (المنجز + ما فات موعده ولم يُنجز). ما لم يحن موعده لا يُحسب على أحد.
+   • الالتزام بالموعد = المنجز في موعده ÷ المنجز. • الموزون: حرجة ×٣، مهمة ×٢، عادية ×١.
+   • الحِمل = المتبقي المقدّر من المفتوح (تقدير غائب = ٦٠ د) ÷ ساعات العمل في الأيام السبعة القادمة.
+   • خطر التأخير: فات الموعد، أو مرّ نصف الوقت والإنجاز أقل بكثير، أو بقي يوم والإنجاز دون النصف، أو متعثّرة. */
+async function computeMetrics(ctx, from, to, member) {
+  const { db, v } = ctx;
+  const set = await getSet(ctx);
+  const today = orgToday(set);
+  const { results: mem } = await db.prepare("SELECT id, name, position_id, department_id, section_id, manager_id, created_at FROM members WHERE org_id = ? AND status != 'disabled'").bind(v.org_id).all();
+  const scope = mem.filter((m) => m.id !== v.id && canSee(v, m.id) && (!member || m.id === member));
+  if (member && !scope.length) fail(403, 'forbidden', 'لا تملك صلاحية عرض هذا الموظف.');
+  await ensureDuties(db, set, v.org_id, scope.map((m) => m.id));
+  const [tk, rs, rp] = await db.batch([
+    db.prepare("SELECT p.member_id, p.id, p.data FROM pdocs p JOIN members m ON m.id = p.member_id WHERE m.org_id = ? AND p.col = 'tasks' AND (p.id LIKE 'a.%' OR p.id LIKE 'd.%') LIMIT 20000").bind(v.org_id),
+    db.prepare("SELECT id, position_id, title, freq, prio, freq_at FROM responsibilities WHERE org_id = ? AND active = 1 AND freq != ''").bind(v.org_id),
+    db.prepare("SELECT member_id, date FROM reports WHERE org_id = ? AND date BETWEEN ? AND ? AND status IN ('submitted', 'approved', 'returned')").bind(v.org_id, from, to),
+  ]);
+  const ids = new Set(scope.map((m) => m.id));
+  const byM = new Map(scope.map((m) => [m.id, []]));
+  for (const r of tk.results) if (ids.has(r.member_id)) { const x = JSON.parse(r.data); if (x.asg) byM.get(r.member_id).push({ ...x, id: r.id, member_id: r.member_id }); }
+  const repN = new Map(); for (const r of rp.results) repN.set(r.member_id, (repN.get(r.member_id) || 0) + 1);
+  const dl = (ms) => localDay(set, ms);
+  const ws0 = period('weekly', today, set).start;
+  const weeks = Array.from({ length: 8 }, (_, i) => addDays(ws0, -7 * (7 - i)));
+  const wIdx = (d) => { for (let i = weeks.length - 1; i >= 0; i--) if (d >= weeks[i]) return d <= addDays(weeks[i], 6) ? i : -1; return -1; };
+  const capDays = workDays(set, today, addDays(today, 6));
+  const team = { points: weeks.map(() => 0) };
+  const risks = [];
+  const out = scope.map((m) => {
+    const all = byM.get(m.id);
+    const A = all.filter((x) => x.asg.kind === 'assign');
+    const D = all.filter((x) => x.asg.kind === 'duty');
+    const st = { elig: 0, done: 0, ontime: 0, wElig: 0, wDone: 0, reviewed: 0, approved: 0 };
+    const add = (w, done, ontime, elig) => { if (!elig) return; st.elig++; st.wElig += w; if (done) { st.done++; st.wDone += w; if (ontime) st.ontime++; } };
+    const inR = (k) => k >= from && k <= to;
+    const trend = weeks.map(() => 0);
+    for (const x of all) if (isDone(x) && x.doneAt) { const i = wIdx(dl(x.doneAt)); if (i >= 0) { trend[i] += prioOf(x); team.points[i] += prioOf(x); } }
+    const a = { due: 0, done: 0, ontime: 0, overdue: 0, open: 0 };
+    for (const x of A) {
+      const done = isDone(x);
+      // المنجزة تُنسب ليوم إنجازها، والمفتوحة لموعدها (أو يوم إسنادها إن لم يكن لها موعد)
+      const key = done && x.doneAt ? dl(x.doneAt) : x.due || dl(x.asg.at);
+      if (!done) { a.open++; if (x.due && x.due < today) a.overdue++; }
+      if (!inR(key)) continue;
+      const elig = done || (x.due && x.due < today);
+      if (elig) a.due++;
+      const ontime = done && (!x.due || dl(x.doneAt || 0) <= x.due);
+      if (done) { a.done++; if (ontime) a.ontime++; if (x.asg.review) { st.reviewed++; if (x.rv?.state === 'ok') st.approved++; } }
+      add(prioOf(x), done, ontime, elig);
+    }
+    // الواجبات: المتوقع من التوصيف نفسه (لا من الوثائق) ⇒ الفائت يُحسب حتى لو لم يفتح الموظف التطبيق
+    const dmap = new Map(D.map((x) => [x.id, x]));
+    const joined = dl(m.created_at);
+    const d = { expected: 0, done: 0, ontime: 0, missed: 0 };
+    for (const r of rs.results.filter((r) => r.position_id === m.position_id)) {
+      const floor = [from, joined, r.freq_at ? dl(r.freq_at) : from].sort().pop();
+      const seen = new Set();
+      for (let day = floor; day <= to && day <= today; day = addDays(day, 1)) {
+        const pr = period(r.freq, day, set); if (!pr || seen.has(pr.key)) continue;
+        seen.add(pr.key);
+        if (pr.due < floor || pr.due > to) continue;
+        const x = dmap.get(`d.${r.id}.${pr.key}`);
+        const done = !!x && isDone(x);
+        const elig = done || pr.due < today;
+        if (!elig) continue;
+        d.expected++;
+        const ontime = done && dl(x.doneAt || 0) <= pr.due;
+        if (done) { d.done++; if (ontime) d.ontime++; } else d.missed++;
+        add(r.prio || 1, done, ontime, true);
+      }
+    }
+    // الحِمل وخطر التأخير
+    const open = all.filter((x) => !isDone(x));
+    const remain = open.filter((x) => !x.due || x.due <= addDays(today, 6)).reduce((s, x) => s + Math.max((x.est || 60) - (x.spent || 0), 15), 0);
+    const cap = set.dayMin * Math.max(capDays, 1);
+    let blocked = 0, lag = 0;
+    for (const x of open.filter((y) => y.asg.kind === 'assign' || y.blocked)) {
+      const why = [];
+      if (x.blocked) { why.push('blocked'); blocked++; }
+      if (x.due && x.due < today) why.push('overdue');
+      else if (x.due) {
+        const end = Date.parse(x.due + 'T23:59:00Z') - set.tz * 60000;
+        const frac = end > x.asg.at ? (now() - x.asg.at) / (end - x.asg.at) : 1;
+        if (frac >= 0.5 && (x.prog || 0) < frac * 100 - 30) { why.push('lag'); lag++; }
+        else if (x.due <= addDays(today, 1) && (x.prog || 0) < 50) why.push('soon');
+      }
+      if (why.length) risks.push({ member_id: m.id, id: x.id, title: x.title, due: x.due, prog: x.prog || 0, prio: prioOf(x), why, blocked: x.blocked || '' });
+    }
+    const pct = (p, q) => (q ? Math.round((p / q) * 100) : null);
+    const repExp = workDays(set, [from, joined].sort().pop(), to < today ? to : today);
+    const res = {
+      member_id: m.id,
+      completion: pct(st.done, st.elig), weighted: pct(st.wDone, st.wElig), ontime: pct(st.ontime, st.done),
+      approval: st.reviewed ? pct(st.approved, st.reviewed) : null,
+      assigned: a, duties: d,
+      load: { minutes: remain, capacity: cap, pct: pct(remain, cap) },
+      reports: { days: repN.get(m.id) || 0, expected: repExp, pct: pct(Math.min(repN.get(m.id) || 0, repExp), repExp) },
+      blocked, lag, trend,
+    };
+    const score = a.overdue * 2 + blocked * 2 + lag + ((res.load.pct || 0) > 110 ? 2 : 0) + (res.completion !== null && res.completion < 60 ? 2 : 0) + (d.missed > 2 ? 1 : 0);
+    res.risk = score >= 4 ? 'high' : score >= 2 ? 'med' : 'ok';
+    res.score = score;
+    return res;
+  });
+  const sev = { blocked: 4, overdue: 3, lag: 2, soon: 1 };
+  risks.sort((x, y) => Math.max(...y.why.map((w) => sev[w])) - Math.max(...x.why.map((w) => sev[w])) || y.prio - x.prio || (x.due || '9').localeCompare(y.due || '9'));
+  return { from, to, today, weeks, members: out, team, risks: risks.slice(0, 40), byM };
+}
+function rangeOf(q, set) {
+  const t = orgToday(set);
+  const to = isDay(q.get('to')) ? q.get('to') : t;
+  const from = isDay(q.get('from')) ? q.get('from') : addDays(to, -29);
+  if (from > to || addDays(from, 366) < to) fail(400, 'invalid', 'الفترة غير صحيحة (حتى سنة).');
+  return { from, to };
+}
+route('GET', '/api/metrics', async (ctx) => {
+  const { from, to } = rangeOf(ctx.q, await getSet(ctx));
+  const { byM, ...m } = await computeMetrics(ctx, from, to, ctx.q.get('member'));
+  return m;
+}, { api: true });
+
+/* ───── تصدير CSV (يفتح في Excel بالعربية) ───── */
+const csvCell = (x) => { let s = x === null || x === undefined ? '' : String(x); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+const csv = (rows) => '\ufeff' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n');
+route('GET', '/api/export.csv', async (ctx) => {
+  const { db, v, q } = ctx;
+  const set = await getSet(ctx);
+  const { from, to } = rangeOf(q, set);
+  const type = q.get('type') === 'tasks' ? 'tasks' : 'people';
+  const M = await computeMetrics(ctx, from, to, q.get('member'));
+  const { results: mem } = await db.prepare('SELECT m.id, m.name, d.name AS dep, s.name AS sec, p.title AS pos FROM members m LEFT JOIN departments d ON d.id = m.department_id LEFT JOIN sections s ON s.id = m.section_id LEFT JOIN positions p ON p.id = m.position_id WHERE m.org_id = ?').bind(v.org_id).all();
+  const who = new Map(mem.map((m) => [m.id, m]));
+  const PR = { 1: 'عادية', 2: 'مهمة', 3: 'حرجة' };
+  const ST = { done: 'منجزة', todo: 'مفتوحة', waiting: 'بانتظار جهة أخرى' };
+  let rows;
+  if (type === 'people') {
+    rows = [['الموظف', 'الإدارة', 'القسم', 'الوظيفة', 'الإنجاز %', 'الموزون %', 'في الموعد %', 'الاعتماد %', 'مسندة مستحقة', 'مسندة منجزة', 'متأخرة الآن', 'واجبات متوقعة', 'واجبات منجزة', 'واجبات فائتة', 'متعثرة', 'الحمل %', 'التقارير', 'أيام العمل', 'مستوى الخطر']]
+      .concat(M.members.map((x) => { const m = who.get(x.member_id) || {}; return [m.name, m.dep, m.sec, m.pos, x.completion, x.weighted, x.ontime, x.approval, x.assigned.due, x.assigned.done, x.assigned.overdue, x.duties.expected, x.duties.done, x.duties.missed, x.blocked, x.load.pct, x.reports.days, x.reports.expected, { high: 'مرتفع', med: 'متوسط', ok: 'طبيعي' }[x.risk]]; }));
+  } else {
+    rows = [['الموظف', 'الإدارة', 'النوع', 'المهمة', 'الأولوية', 'أسندها', 'الموعد', 'الحالة', 'النسبة %', 'أُنجزت', 'في الموعد', 'الاعتماد', 'التعثر', 'تفاصيل الإنجاز', 'التقدير (د)', 'الفعلي (د)']];
+    for (const [mid, list] of M.byM) for (const x of list) {
+      const key = isDone(x) && x.doneAt ? localDay(set, x.doneAt) : x.due || localDay(set, x.asg.at);
+      if (key < from || key > to) continue;
+      const m = who.get(mid) || {};
+      const dd = x.doneAt ? localDay(set, x.doneAt) : '';
+      rows.push([m.name, m.dep, x.asg.kind === 'duty' ? 'واجب دوري' : 'مسندة', x.title, PR[prioOf(x)], x.asg.byName || 'التوصيف', x.due, ST[x.status] || x.status, x.prog || 0, dd,
+        dd ? (!x.due || dd <= x.due ? 'نعم' : 'لا') : '', x.rv?.state === 'ok' ? 'معتمدة' : x.rv?.state === 'pending' ? 'بانتظار' : x.rv?.state === 'returned' ? 'مُعادة' : '', x.blocked || '', x.rpt || '', x.est || '', x.spent || '']);
+    }
+  }
+  return new Response(csv(rows), { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="itrack-${type}-${from}_${to}.csv"`, 'cache-control': 'no-store' } });
+}, { api: true });
+
+/* ═════════════ التكامل ═════════════
+   ثلاث طرق، كل واحدة بمفتاح في الإعدادات:
+   ١) Webhooks موقّعة (HMAC-SHA256) تصل لأي نظام: Slack/Teams/Google Chat (حقل text) أو ERP أو n8n.
+   ٢) مفاتيح API (itk_…) لنظام خارجي يقرأ المؤشرات ويُسند مهام، باسم المسؤول الذي أصدرها وعلى مسارات محددة فقط.
+   ٣) رابط تقويم (ICS) يشترك فيه الموظف من Outlook أو Google Calendar أو تقويم الجوال. */
+async function hmacHex(secret, body) {
+  const k = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return hex(await crypto.subtle.sign('HMAC', k, enc.encode(body)));
+}
+async function deliver(ctx) {
+  if (!ctx.events?.length || !ctx.v) return;
+  const set = await getSet(ctx);
+  if (!set.feat.webhooks) return;
+  const hooks = set.hooks.filter((h) => h.on);
+  if (!hooks.length) return;
+  const jobs = [];
+  for (const ev of ctx.events) for (const h of hooks) {
+    if (h.events.length && !h.events.includes(ev.event)) continue;
+    const body = JSON.stringify({ event: ev.event, at: now(), org: { id: ctx.v.org_id, name: ctx.orgName }, data: ev.data, text: ev.text });
+    jobs.push(hmacHex(h.secret, body).then((sig) => fetch(h.url, { method: 'POST', body,
+      headers: { 'content-type': 'application/json', 'user-agent': 'ITrack-Webhook/1', 'x-itrack-event': ev.event, 'x-itrack-signature': 'sha256=' + sig },
+      signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined })).catch(() => {}));
+  }
+  const all = Promise.all(jobs);
+  if (ctx.exec?.waitUntil) ctx.exec.waitUntil(all); else await all;
+}
+route('POST', '/api/settings/hooks/:hid/test', async (ctx) => {
+  needAdmin(ctx.v);
+  const set = await getSet(ctx);
+  const h = set.hooks.find((x) => x.id === ctx.p.hid);
+  if (!h) fail(404, 'not-found', 'الرابط غير موجود.');
+  const body = JSON.stringify({ event: 'test', at: now(), org: { id: ctx.v.org_id, name: ctx.orgName }, data: {}, text: `اختبار ربط ITrack من ${ctx.v.name}` });
+  try {
+    const r = await fetch(h.url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'user-agent': 'ITrack-Webhook/1', 'x-itrack-event': 'test', 'x-itrack-signature': 'sha256=' + await hmacHex(h.secret, body) }, signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined });
+    return { ok: r.ok, status: r.status };
+  } catch (e) { return { ok: false, status: 0, error: String(e?.message || e).slice(0, 200) }; }
+});
+
+route('GET', '/api/keys', async (ctx) => {
+  needAdmin(ctx.v);
+  const { results } = await ctx.db.prepare('SELECT k.kh, k.kp, k.name, k.created_at, k.last_at, k.revoked, m.name AS owner FROM api_keys k LEFT JOIN members m ON m.id = k.member_id WHERE k.org_id = ? ORDER BY k.created_at DESC').bind(ctx.v.org_id).all();
+  return { keys: results.map((k) => ({ id: k.kh, prefix: k.kp, name: k.name, owner: k.owner, created_at: k.created_at, last_at: k.last_at, revoked: !!k.revoked })) };
+});
+route('POST', '/api/keys', async (ctx) => {
+  const { db, v, body } = ctx;
+  needAdmin(v);
+  await needFeat(ctx, 'api', 'فعّل «مفاتيح API» من إعدادات التكامل أولًا.');
+  const name = text(body.name, 60, { required: true, label: 'اسم النظام' });
+  const n_ = await db.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE org_id = ? AND revoked = 0').bind(v.org_id).first();
+  if (n_.n >= 10) fail(429, 'limit', 'الحد ١٠ مفاتيح فعّالة.');
+  const key = 'itk_' + b64e(rand(30)); const kh = await sha(key);
+  await db.batch([
+    db.prepare('INSERT INTO api_keys (kh, kp, org_id, member_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(kh, key.slice(0, 10), v.org_id, v.id, name, now()),
+    auditQ(db, v.org_id, v.id, 'key.create', 'key', kh.slice(0, 16), null, { name }),
+  ]);
+  return { key, id: kh };
+});
+route('POST', '/api/keys/:kh/revoke', async (ctx) => {
+  const { db, v, p } = ctx;
+  needAdmin(v);
+  const k = await db.prepare('SELECT name FROM api_keys WHERE kh = ? AND org_id = ?').bind(p.kh, v.org_id).first();
+  if (!k) fail(404, 'not-found', 'المفتاح غير موجود.');
+  await db.batch([db.prepare('UPDATE api_keys SET revoked = 1 WHERE kh = ?').bind(p.kh), auditQ(db, v.org_id, v.id, 'key.revoke', 'key', p.kh.slice(0, 16), null, { name: k.name })]);
+  return { ok: true };
+});
+
+/* ───── تقويم: رابط سري لكل موظف ───── */
+route('POST', '/api/ics', async (ctx) => {
+  const { db, v } = ctx;
+  await needFeat(ctx, 'ics', 'رابط التقويم معطّل في إعدادات الجهة.');
+  const tok = 'ic_' + b64e(rand(24));
+  await db.batch([
+    db.prepare('DELETE FROM feeds WHERE member_id = ?').bind(v.id), // رابط جديد يلغي القديم
+    db.prepare('INSERT INTO feeds (th, org_id, member_id, created_at) VALUES (?, ?, ?, ?)').bind(await sha(tok), v.org_id, v.id, now()),
+  ]);
+  return { path: `/api/ics/${tok}.ics` };
+});
+const icsEsc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const icsFold = (l) => { const out = []; let s = l; while (s.length > 60) { out.push(s.slice(0, 60)); s = ' ' + s.slice(60); } out.push(s); return out.join('\r\n'); };
+route('GET', '/api/ics/:tok', async ({ db, p }) => {
+  const tok = p.tok.replace(/\.ics$/, '');
+  if (!/^ic_[\w-]{20,60}$/.test(tok)) fail(404, 'not-found', 'غير موجود.');
+  const f = await db.prepare("SELECT f.member_id, o.settings FROM feeds f JOIN orgs o ON o.id = f.org_id JOIN members m ON m.id = f.member_id AND m.status = 'active' WHERE f.th = ?").bind(await sha(tok)).first();
+  if (!f) fail(404, 'not-found', 'غير موجود.');
+  const set = mergeSet(f.settings);
+  if (!set.feat.ics) fail(403, 'feature-off', 'رابط التقويم معطّل.');
+  const { results } = await db.prepare("SELECT id, data FROM pdocs WHERE member_id = ? AND col = 'tasks' ORDER BY updated_at DESC LIMIT 2000").bind(f.member_id).all();
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//ITrack//AR', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:ITrack'];
+  for (const r of results) {
+    const x = JSON.parse(r.data);
+    if (isDone(x) || !isDay(x.due || '')) continue;
+    const d = x.due.replace(/-/g, '');
+    L.push('BEGIN:VEVENT', `UID:${r.id}@itrack`, `DTSTAMP:${stamp}`);
+    if (TIME.test(x.time || '')) {
+      const st = Date.parse(`${x.due}T${x.time}:00Z`); const en = st + (x.duration || x.est || 30) * 60000;
+      const f2 = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').slice(0, 15);
+      L.push(`DTSTART:${f2(st)}`, `DTEND:${f2(en)}`); // وقت محلي عائم = وقت الجهاز
+    } else L.push(`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${addDays(x.due, 1).replace(/-/g, '')}`);
+    L.push(icsFold(`SUMMARY:${icsEsc((x.asg ? (x.asg.kind === 'duty' ? '↻ ' : '📌 ') : '') + x.title)}`));
+    if (x.asg?.desc) L.push(icsFold(`DESCRIPTION:${icsEsc(x.asg.desc)}`));
+    L.push('END:VEVENT');
+    if (L.length > 6000) break;
+  }
+  L.push('END:VCALENDAR');
+  return new Response(L.join('\r\n') + '\r\n', { headers: { 'content-type': 'text/calendar; charset=utf-8', 'cache-control': 'no-store' } });
+}, { open: true });
 
 /* ═════════════ التشغيل ═════════════ */
 /* ═════════════ الذكاء الاصطناعي: إدخال صوتي ومحضر اجتماع ═════════════
@@ -941,14 +1735,19 @@ const MINUTES_RULES = (today, title, people) => `أنت أمين سر محترف
 - dates: المواعيد القادمة المذكورة (اجتماع لاحق، تسليم...).
 - إن لم يُذكر شيء في بند فاتركه مصفوفة فارغة. لا تضف ما لم يُقل.`;
 const okAudio = (audio) => audio && audio.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(audio.slice(0, 200));
-const needAi = (env) => { if (!aiProvider(env)) fail(501, 'no-ai', 'الذكاء الاصطناعي غير مفعّل على هذا الخادم.'); };
+/** طبقتان: الخادم (هل ربطت تقنية المعلومات مزوّدًا؟) ثم الجهة (هل فعّله المسؤول؟). الجهة مطلوبة دائمًا كي لا يُتجاوز مفتاحها. */
+async function needAi(ctx) {
+  if (!aiProvider(ctx.env)) fail(501, 'no-ai', 'الذكاء الاصطناعي غير مفعّل على هذا الخادم.');
+  await needFeat(ctx, 'ai', 'الذكاء الاصطناعي معطّل في إعدادات الجهة.');
+}
 const ctxList = (a, n) => (Array.isArray(a) ? a : []).map((x) => tcut(x, 40)).filter(Boolean).slice(0, n);
 function aiCtx(src) {
   return { today: DATE.test(src.today || '') ? src.today : dayOf(now()), weekday: tcut(src.weekday, 20), areas: ctxList(src.areas, 20), people: ctxList(src.people, 40) };
 }
 
-route('POST', '/api/ai/voice', async ({ db, env, user, raw, q }) => {
-  needAi(env);
+route('POST', '/api/ai/voice', async (ctx) => {
+  const { db, env, user, raw, q } = ctx;
+  await needAi(ctx);
   await quota(db, user.uid, 'transcribe'); await quota(db, user.uid, 'parse');
   if (!okAudio(raw)) fail(400, 'invalid', 'التسجيل غير صالح.');
   let c = {}; try { c = JSON.parse(q.get('ctx') || '{}'); } catch {}
@@ -956,36 +1755,63 @@ route('POST', '/api/ai/voice', async ({ db, env, user, raw, q }) => {
   const t = await transcribeAudio(env, raw, tcut(q.get('hint') || '', 400));
   if (!t) return { text: '', items: [] };
   return { text: t, items: await parseText(env, t, x.today, x.weekday, x.areas, x.people) };
-}, { raw: MAX_AUDIO_B64, noOrg: true });
-route('POST', '/api/ai/transcribe', async ({ db, env, user, raw, q }) => {
-  needAi(env); await quota(db, user.uid, 'transcribe');
+}, { raw: MAX_AUDIO_B64 });
+route('POST', '/api/ai/transcribe', async (ctx) => {
+  const { db, env, user, raw, q } = ctx;
+  await needAi(ctx); await quota(db, user.uid, 'transcribe');
   if (!okAudio(raw)) fail(400, 'invalid', 'التسجيل غير صالح.');
   return { text: await transcribeAudio(env, raw, tcut(q.get('hint') || '', 400)) };
-}, { raw: MAX_AUDIO_B64, noOrg: true });
-route('POST', '/api/ai/parse', async ({ db, env, user, body }) => {
-  needAi(env); await quota(db, user.uid, 'parse');
+}, { raw: MAX_AUDIO_B64 });
+route('POST', '/api/ai/parse', async (ctx) => {
+  const { db, env, user, body } = ctx;
+  await needAi(ctx); await quota(db, user.uid, 'parse');
   const t = tcut(body.text, 4000); if (!t) return { items: [] };
   const x = aiCtx(body);
   return { items: await parseText(env, t, x.today, x.weekday, x.areas, x.people) };
-}, { noOrg: true });
-route('POST', '/api/ai/minutes', async ({ db, env, user, body }) => {
-  needAi(env); await quota(db, user.uid, 'minutes');
+});
+route('POST', '/api/ai/minutes', async (ctx) => {
+  const { db, env, user, body } = ctx;
+  await needAi(ctx); await quota(db, user.uid, 'minutes');
   const t = tcut(body.text, 60000); const title = tcut(body.title, 200);
   if (t.length < 20) fail(400, 'invalid', 'النص قصير جدًا.');
   const x = aiCtx(body);
   const j = await llmJson(env, MINUTES_RULES(x.today, title, x.people), t, { name: 'minutes', schema: MINUTES_SCHEMA }, 2500);
   if (!j) fail(502, 'ai-failed', 'لم يُرجع النموذج محضرًا صالحًا.');
   return cleanMinutes(j);
-}, { noOrg: true });
+});
+/** تقسيم مهمة كبيرة إلى خطوات صغيرة قابلة للتنفيذ (اقتراح يراجعه الإنسان قبل الحفظ). */
+const STEPS_SCHEMA = { type: 'object', required: ['steps'], properties: { steps: { type: 'array', items: S_STR } } };
+route('POST', '/api/ai/steps', async (ctx) => {
+  const { db, env, user, body } = ctx;
+  await needAi(ctx); await quota(db, user.uid, 'parse');
+  const title = tcut(body.title, 200); if (!title) fail(400, 'invalid', 'اكتب عنوان المهمة.');
+  const j = await llmJson(env, `أنت مساعد تخطيط عمل. قسّم المهمة إلى ٣–٧ خطوات عملية مرتبة، كل خطوة تبدأ بفعل وتُنجز في جلسة واحدة (أقل من ساعتين)، بالعربية الفصحى المختصرة. لا تضف ما لا يلزم. أعد JSON فقط بالشكل {"steps":[...]}.`,
+    `المهمة: ${title}${body.desc ? `\nالتفاصيل: ${tcut(body.desc, 2000)}` : ''}`, { name: 'steps', schema: STEPS_SCHEMA }, 500);
+  return { steps: (Array.isArray(j?.steps) ? j.steps : []).map((s) => tcut(String(s), 160)).filter(Boolean).slice(0, 8) };
+});
+/** تلخيص نقاش مهمة طويل: ما اتُّفق عليه، وما بقي مفتوحًا. */
+const SUM_SCHEMA = { type: 'object', required: ['summary'], properties: { summary: S_STR, open: { type: 'array', items: S_STR } } };
+route('POST', '/api/ai/summary', async (ctx) => {
+  const { db, env, user, body } = ctx;
+  await needAi(ctx); await quota(db, user.uid, 'minutes');
+  const x = await taskAccess(ctx, String(body.owner || ''), String(body.task || ''));
+  const { results } = await db.prepare('SELECT c.body, m.name FROM comments c LEFT JOIN members m ON m.id = c.author_id WHERE c.owner_id = ? AND c.task_id = ? ORDER BY c.at LIMIT 200').bind(body.owner, body.task).all();
+  if (results.length < 2 && !x.t.rpt) fail(400, 'invalid', 'لا يوجد نقاش كافٍ للتلخيص.');
+  const thread = results.map((r) => `${r.name || '—'}: ${r.body}`).join('\n').slice(0, 20000);
+  const j = await llmJson(env, 'لخّص نقاش مهمة عمل بالعربية في جملتين إلى أربع: ما الوضع، وما اتُّفق عليه. ثم open: ما بقي معلّقًا أو ينتظر أحدًا. لا تخترع. أعد JSON فقط.',
+    `المهمة: ${x.t.title}\n${x.t.asg?.desc ? `الوصف: ${x.t.asg.desc}\n` : ''}${x.t.rpt ? `تقرير الموظف: ${x.t.rpt}\n` : ''}النقاش:\n${thread}`, { name: 'summary', schema: SUM_SCHEMA }, 600);
+  if (!j) fail(502, 'ai-failed', 'لم يُرجع النموذج ملخصًا صالحًا.');
+  return { summary: tcut(j.summary, 1500), open: (Array.isArray(j.open) ? j.open : []).map((s) => tcut(String(s), 300)).filter(Boolean).slice(0, 8) };
+});
 
 const OPEN = new Set(['/api/health', '/api/auth/signup', '/api/auth/login', '/api/auth/code']);
 const NO_ORG = new Set(['/api/me', '/api/orgs', '/api/auth/logout', '/api/auth/password']);
 
 export default {
-  async fetch(req, env) { return withCors(await handle(req, env), req, env); },
+  async fetch(req, env, exec) { return withCors(await handle(req, env, exec), req, env); },
 };
 
-async function handle(req, env) {
+async function handle(req, env, exec) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204 });
   const url = new URL(req.url);
   const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
@@ -994,13 +1820,28 @@ async function handle(req, env) {
     const db = env.DB;
     if (!db) fail(500, 'no-db', 'قاعدة البيانات غير مربوطة (DB).');
     await migrate(db);
-    const ctx = { db, env, req, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
-    if (!OPEN.has(url.pathname)) {
+    isD1 = db.constructor?.name === 'D1Database';
+    const ctx = { db, env, req, exec, q: url.searchParams, p: url.pathname.match(r.re).groups || {}, body: {} };
+    if (!OPEN.has(url.pathname) && !r.open) {
       ctx.user = await identity(req, env, db);
       if (!ctx.user) fail(401, 'auth', 'سجّل الدخول من جديد.');
-      if (!NO_ORG.has(url.pathname) && !r.noOrg) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
+      if (ctx.user.key) {
+        // مفتاح تكامل: الجهة من المفتاح نفسه، والمسارات المعلَّمة api فقط، وبمفتاح «api» مفعّل
+        const k = ctx.user.key;
+        if (!r.api) fail(403, 'forbidden', 'هذا المسار غير متاح لمفاتيح التكامل.');
+        const me = await db.prepare("SELECT * FROM members WHERE id = ? AND org_id = ? AND status = 'active'").bind(k.member_id, k.org_id).first();
+        if (!me) fail(403, 'forbidden', 'صاحب المفتاح لم يعد نشطًا.');
+        ctx.v = { ...me, isAdmin: me.role === 'admin', subs: await subtree(db, me.org_id, me.id), viaKey: true };
+        await needFeat(ctx, 'api', 'مفاتيح التكامل معطّلة في إعدادات الجهة.');
+        await throttle(db, 'key:' + k.kh, 3000, 3600_000); await bump(db, 'key:' + k.kh, 3600_000);
+        if (now() - (k.last_at || 0) > 3600_000) await db.prepare('UPDATE api_keys SET last_at = ? WHERE kh = ?').bind(now(), k.kh).run();
+      } else if (!NO_ORG.has(url.pathname) && !r.noOrg) ctx.v = await viewer(db, ctx.user, req.headers.get('x-org'));
     }
-    if (r.raw) {
+    if (ctx.v && ctx.p.owner === 'me') ctx.p.owner = ctx.v.id; // «مهامي» لا تعرف معرّف العضو: me = أنا
+    if (r.bin) {
+      ctx.bin = new Uint8Array(await req.arrayBuffer());
+      if (ctx.bin.length > r.bin) fail(413, 'too-big', 'الصورة أكبر من المسموح بعد الضغط.');
+    } else if (r.raw) {
       // الصوت: نص base64 خام حتى ~٦ ميغابايت، يُمرَّر دون تحليل JSON
       ctx.raw = await req.text();
       if (ctx.raw.length > r.raw) fail(413, 'too-big', 'التسجيل أطول من المسموح.');
@@ -1010,7 +1851,10 @@ async function handle(req, env) {
       try { ctx.body = raw ? JSON.parse(raw) : {}; } catch { fail(400, 'invalid', 'صيغة الطلب غير صحيحة.'); }
       if (!ctx.body || typeof ctx.body !== 'object' || Array.isArray(ctx.body)) fail(400, 'invalid', 'صيغة الطلب غير صحيحة.');
     }
-    return json(await r.fn(ctx));
+    const out = await r.fn(ctx);
+    const res = out instanceof Response ? out : json(out);
+    if (ctx.events?.length) await deliver(ctx).catch(() => {}); // Webhooks بعد نجاح العملية فقط
+    return res;
   } catch (e) {
     if (e instanceof Fail) return json({ error: e.code, message: e.message }, e.status);
     console.error(e);

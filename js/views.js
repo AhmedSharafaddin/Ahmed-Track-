@@ -16,6 +16,7 @@ import { vPyramid } from './pyramid.js';
 import { notify } from './notify.js';
 import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
+import { wk, isWork, FREQ_AR, aiOn } from './work.js';
 
 export const ui = {
   route: 'today', param: null, sel: null, q: '', weekOffset: 0, drafts: {},
@@ -43,6 +44,7 @@ export function row(t, o = {}) {
   const q = quadrant(t);
   const done = !isOpen(t);
   const meta = [];
+  if (isWork(t)) meta.push(...workChips(t, done));
   if (!o.hideArea && hasArea(t)) { const a = areaById(t.areaId); meta.push(`<span class="m">${areaMark(a, 'xs')}${esc(a.name)}</span>`); }
   if (!o.inToday && isFocus(t) && !done) meta.push(`<span class="m m-focus">${I('today')}ضمن الثلاثة</span>`);
   if (isWaiting(t) && !done) meta.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
@@ -65,7 +67,7 @@ export function row(t, o = {}) {
     acts.push(`<button class="ib" data-act="unfocus" data-id="${t.id}" title="أعدها للقائمة" aria-label="أزل من أولويات اليوم">${I('x')}</button>`);
   }
 
-  return `<li class="t q-${q}${done ? ' done' : ''}${ui.sel === t.id ? ' sel' : ''}${ui.justDone === t.id ? ' pop' : ''}" data-id="${t.id}"${o.drag ? ' draggable="true"' : ''}>
+  return `<li class="t q-${q}${done ? ' done' : ''}${ui.sel === t.id ? ' sel' : ''}${ui.justDone === t.id ? ' pop' : ''}${isWork(t) ? ' work' : ''}" data-id="${t.id}"${o.drag && !isWork(t) ? ' draggable="true"' : ''}>
     <button class="ck" data-act="toggle" data-id="${t.id}" aria-label="${done ? 'إلغاء الإنجاز' : 'إنجاز'}: ${esc(t.title)}">${I('check')}</button>
     <button class="tm" data-act="open" data-id="${t.id}">
       <span class="tt">${esc(t.title)}</span>
@@ -217,6 +219,7 @@ const EMPTY = {
   important: ['star', 'اضغط النجمة بجانب أي مهمة لتظهر هنا.'],
   planned: ['cal', 'المهام التي لها موعد تظهر هنا مرتبة حسب القرب.'],
   assigned: ['people', 'أسند مهمة لشخص بكتابة @الاسم، أو من تفاصيل المهمة، ثم تابعها من هنا.'],
+  work: ['people', 'ما يسنده لك مديرك، وواجبات توصيفك اليومية والأسبوعية والشهرية، تظهر هنا تلقائيًا.'],
   inbox: ['inbox', 'الوارد فارغ. كل ما تلتقطه دون مجال يصل هنا، وتصنّفه في المراجعة الأسبوعية.'],
   area: ['list', 'لا مهام مفتوحة في هذا المجال.'],
 };
@@ -535,9 +538,51 @@ function whenLabel(t) {
 }
 const fireFmt = new Intl.DateTimeFormat('ar-u-nu-latn', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
+/* ═════════════ المهمة المسندة والواجب ═════════════ */
+const WHO = (t) => (t.asg.kind === 'duty' ? `واجب ${FREQ_AR[t.asg.freq] || ''}` : `من ${t.asg.byName || 'مديرك'}`);
+function workChips(t, done) {
+  const c = [`<span class="m m-work">${I('people')}${esc(WHO(t))}</span>`];
+  if (t.rv?.state === 'pending') c.push(`<span class="m m-wait">${I('hourglass')}بانتظار الاعتماد</span>`);
+  else if (t.rv?.state === 'returned' && !done) c.push(`<span class="m late">${I('back')}مُعادة: ${esc((t.rv.note || '').slice(0, 40))}</span>`);
+  else if (t.rv?.state === 'ok') c.push(`<span class="m m-ok">${I('check')}معتمدة</span>`);
+  if (t.blocked && !done) c.push(`<span class="m late">${I('hand')}متعثّرة</span>`);
+  if (!done && t.prog) c.push(`<span class="m">${n(t.prog)}٪</span>`);
+  if (!done && t.asg.photo && !(t.photos || []).length) c.push(`<span class="m">${I('share')}تتطلب صورة</span>`);
+  return c;
+}
+const PROGS = [0, 25, 50, 75, 100];
+function workBlock(t, done) {
+  const a = t.asg;
+  const th = wk.thread.get(t.id);
+  const photos = t.photos || [];
+  const rv = t.rv;
+  const rvNote = rv?.state === 'returned' ? `<div class="wk-n warn" role="status"><b>${I('back')}أعادها ${esc(rv.byName || 'المدير')} للتعديل</b>${rv.note ? `<p>${esc(rv.note)}</p>` : ''}</div>`
+    : rv?.state === 'pending' ? `<div class="wk-n"><b>${I('hourglass')}رُفعت منجزة، بانتظار اعتماد ${esc(a.byName || 'مديرك')}</b></div>`
+    : rv?.state === 'ok' ? `<div class="wk-n ok"><b>${I('check')}اعتمدها ${esc(rv.byName || 'المدير')}</b>${rv.note ? `<p>${esc(rv.note)}</p>` : ''}</div>` : '';
+  const comments = (th?.comments || []).map((c) => `<li><b>${esc(c.author || '—')}</b><time>${fmtDate(new Date(c.at).toISOString().slice(0, 10))}</time><p>${esc(c.body)}</p></li>`).join('');
+  return `<section class="pblk work" aria-label="تنفيذ المهمة">
+    <div class="wk-h">${I('people', 'd')}<span><b>${a.kind === 'duty' ? `واجب ${FREQ_AR[a.freq] || ''} من توصيفك الوظيفي` : `أسندها ${esc(a.byName || 'مديرك')}`}</b>
+      <small>${[a.kind === 'assign' && a.at ? `في ${fmtDate(new Date(a.at).toISOString().slice(0, 10))}` : '', a.review ? 'تحتاج اعتماده' : '', a.photo ? 'تتطلب صورة إنجاز' : '', `${I('hand')}العنوان والموعد والأولوية يحددها ${a.kind === 'duty' ? 'التوصيف' : 'هو'}`].filter(Boolean).join(' · ')}</small></span></div>
+    ${a.desc ? `<p class="wk-desc">${esc(a.desc)}</p>` : ''}
+    ${rvNote}
+    ${t.warn === 'photo' && !done ? `<div class="wk-n warn" role="alert"><b>أرفق صورة الإنجاز أولًا، ثم علّمها منجزة.</b></div>` : ''}
+    ${!done ? `<div class="prow static">${I('chart', 'd')}<span>نسبة الإنجاز</span><div class="seg sm" role="group" aria-label="نسبة الإنجاز">${PROGS.map((p) => `<button class="${(t.prog || 0) === p ? 'on' : ''}" aria-pressed="${(t.prog || 0) === p}" data-act="set-prog" data-v="${p}">${n(p)}٪</button>`).join('')}</div></div>` : ''}
+    <label class="wk-f"><span>تفاصيل الإنجاز${done ? '' : ' (ما فعلته، الأرقام، ما بقي)'}</span><textarea class="in" data-f="rpt" rows="2" maxlength="1000" placeholder="مثال: طابقت ١٢ رفًا من ١٥، والفرق ٣ قطع في الرف ب">${esc(t.rpt || '')}</textarea></label>
+    ${!done ? (t.blocked || ui.blocking === t.id
+      ? `<label class="wk-f wk-bl"><span>${I('hand')}سبب التعثّر (يصل لمديرك)</span><input class="in" data-f="blocked" maxlength="400" value="${esc(t.blocked)}" /></label><button class="link" data-act="unblock">زال العائق</button>`
+      : `<button class="prow" data-act="block">${I('hand', 'i')}<span>متعثّر؟<small>اكتب ما يعيقك ومن تحتاج، ويصل لمديرك فورًا</small></span></button>`) : ''}
+    <div class="wk-ph" aria-label="صور الإنجاز">${photos.map((fid) => { const u = wk.photos.get(fid); return u ? `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="صورة إنجاز" width="72" height="72" loading="lazy" /></a>` : `<span class="ph-ld" aria-label="تحميل الصورة"></span>`; }).join('')}
+      ${!done && photos.length < 4 ? `<label class="wk-add${wk.busy.has(t.id) ? ' busy' : ''}">${I('plus')}<span>${wk.busy.has(t.id) ? 'يرفع…' : 'صورة'}</span><input type="file" accept="image/*" capture="environment" data-act="photo-up" hidden /></label>` : ''}</div>
+    <div class="wk-th"><p class="wk-lbl">${I('note')}النقاش${th?.comments?.length ? ` · ${n(th.comments.length)}` : ''}</p>
+      ${th?.error ? `<p class="hint">${esc(th.error)}</p>` : ''}${comments ? `<ol class="wk-c">${comments}</ol>` : th ? '' : '<p class="hint">…</p>'}
+      <form data-form="wk-comment" class="wk-cf"><textarea class="in" name="body" rows="1" maxlength="2000" placeholder="اكتب لمديرك هنا بدل واتساب (‎@الاسم للإشارة)" aria-label="تعليق"></textarea><button class="btn sm" type="submit">إرسال</button></form></div>
+  </section>`;
+}
+
 export function pane(t) {
   if (!t) return '';
   const done = !isOpen(t);
+  const work = isWork(t);
   const q = quadrant(t);
   const steps = t.steps || [];
   const inFocus = isFocus(t);
@@ -580,7 +625,7 @@ export function pane(t) {
   return `<div class="pane-in calm q-${q}${done ? ' done' : ''}" data-id="${t.id}">
     <div class="pane-top">
       <button class="ib only-m" data-act="close-pane" aria-label="رجوع">${I('back')}</button>
-      <span class="quadtag">${meet ? 'اجتماع' : QUADRANTS[q].label}</span>
+      <span class="quadtag">${meet ? 'اجتماع' : QUADRANTS[q].label}</span>${work ? `<span class="quadtag wk-tag">${esc(WHO(t))}</span>` : ''}
       <span class="spacer"></span>
       <button class="ib only-d" data-act="close-pane" aria-label="إغلاق التفاصيل">${I('x')}</button>
     </div>
@@ -588,8 +633,8 @@ export function pane(t) {
       <div class="row"><button class="btn sm" data-act="focus-steps">قسّمها إلى خطوات</button><button class="btn sm" data-act="focus-assign">أسندها</button><button class="btn sm" data-act="reset-slips">سأنجزها، صفّر العدّاد</button></div></div>` : ''}
     <div class="ph">
       <button class="ck big" data-act="toggle" data-id="${t.id}" aria-label="${done ? 'إلغاء الإنجاز' : 'إنجاز'}">${I('check')}</button>
-      <textarea class="ptitle" id="p-title" data-f="title" rows="1" maxlength="200" aria-label="عنوان المهمة">${esc(t.title)}</textarea>
-      <button class="star${t.important ? ' on' : ''}" data-act="star" data-id="${t.id}" aria-pressed="${!!t.important}" aria-label="مهم">${I('star', t.important ? 'f' : 'i')}</button>
+      <textarea class="ptitle" id="p-title" data-f="title" rows="1" maxlength="200" aria-label="عنوان المهمة"${work ? ' readonly' : ''}>${esc(t.title)}</textarea>
+      ${work ? `<span class="star${t.important ? ' on' : ''}" role="img" aria-label="${t.important ? 'مهمة' : 'عادية'}">${I('star', t.important ? 'f' : 'i')}</span>` : `<button class="star${t.important ? ' on' : ''}" data-act="star" data-id="${t.id}" aria-pressed="${!!t.important}" aria-label="مهم">${I('star', t.important ? 'f' : 'i')}</button>`}
     </div>
 
     ${!done && !meet ? `<div class="pomo">
@@ -598,10 +643,12 @@ export function pane(t) {
     </div>` : ''}
 
     <div class="pblk">
-      <button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>
+      ${work ? `<div class="prow static when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(t.due ? whenLabel(t) : 'بلا موعد محدد')}</b><small>${QUADRANTS[q].label}</small></span></div>`
+        : `<button class="prow when${t.due ? ' on' : ''}${isOverdue(t) ? ' late' : ''}" data-act="pick-due">${I(t.time ? 'clock' : 'cal', 'd')}<span><b>${esc(whenLabel(t))}</b>${t.remind != null && t.due ? `<small>${I('bell')}${REMINDS[t.remind]}${fire ? `، ${fireFmt.format(fire)}` : ''}</small>` : ''}${t.intent ? `<small class="intent">«${esc(t.intent)}»</small>` : ''}</span>${I('fwd')}</button>`}
       ${!done ? `<button class="prow${inFocus ? ' on' : ''}" data-act="${inFocus ? 'unfocus' : 'focus'}" data-id="${t.id}" ${!inFocus && full ? 'disabled' : ''}>${I('today', 'd')}<span>${inFocus ? 'ضمن أولويات اليوم' : full ? 'أولويات اليوم ممتلئة (٣)' : 'أضف إلى أولويات اليوم'}</span>${inFocus ? `<em>${I('x')}</em>` : ''}</button>` : ''}
-      ${globalThis.CC_BACKEND ? `<button class="prow${t.shared ? ' on' : ''}" data-act="share" data-id="${t.id}" aria-pressed="${!!t.shared}">${I('people', 'd')}<span><b>${t.shared ? 'يراها مديرك (اضغط للإخفاء)' : 'خاصة بي'}</b><small>${t.shared ? 'للقراءة فقط، لمن فوقك في الهيكل' : 'اضغط لإظهارها لمديرك'}</small></span></button>` : ''}
+      ${globalThis.CC_BACKEND && !work ? `<button class="prow${t.shared ? ' on' : ''}" data-act="share" data-id="${t.id}" aria-pressed="${!!t.shared}">${I('people', 'd')}<span><b>${t.shared ? 'يراها مديرك (اضغط للإخفاء)' : 'خاصة بي'}</b><small>${t.shared ? 'للقراءة فقط، لمن فوقك في الهيكل' : 'اضغط لإظهارها لمديرك'}</small></span></button>` : ''}
     </div>
+    ${work ? workBlock(t, done) : ''}
 
     <div class="psteps" id="steps">
       ${steps.map((s, i) => `<div class="step${s.done ? ' done' : ''}">
@@ -609,6 +656,7 @@ export function pane(t) {
         <textarea class="sin" id="st-${s.id}" data-step="${i}" rows="1" maxlength="400" aria-label="خطوة">${esc(s.title)}</textarea>
         <button class="ib xs" data-act="step-del" data-i="${i}" aria-label="حذف الخطوة">${I('x')}</button></div>`).join('')}
       <form class="step add" data-form="step"><span class="ck sm ghost">${I('plus')}</span><textarea class="sin" id="p-newstep" name="title" rows="1" placeholder="${steps.length ? 'خطوة تالية' : 'أصغر خطوة تبدأ بها (اختياري)'}" maxlength="400"></textarea></form>
+      ${aiOn() && !done && steps.length < 3 ? `<button class="link ai-steps" data-act="ai-steps">${I('sparkle')}قسّمها إلى خطوات بالذكاء الاصطناعي</button>` : ''}
     </div>
 
     ${meetBlock}
@@ -623,26 +671,26 @@ export function pane(t) {
       <div class="prow static">${I('list', 'd')}<span>المجال</span><select class="in sm" data-f="areaId" aria-label="المجال">${areaOptions(t.areaId)}</select></div>
       <div class="prow static">${I('flag', 'd')}<span>الهدف</span><select class="in sm" data-f="goalId" aria-label="الهدف">${goalOptions(t.goalId)}</select></div>
     </div>
-    <div class="pblk">
+    ${work ? '' : `<div class="pblk">
       <div class="prow static">${I('hourglass', 'd')}<span>الوقت المتوقع</span>
         <div class="seg sm">${ESTS.map((m) => `<button class="${t.est === m ? 'on' : ''}" aria-pressed="${t.est === m}" data-act="set-est" data-v="${m}">${fmtMin(m)}</button>`).join('')}</div></div>
       <div class="prow static">${I('grid', 'd')}<span>التصنيف</span>
         <label class="chip-t"><input type="checkbox" data-f="important" ${t.important ? 'checked' : ''} /> مهم</label>
         <label class="chip-t"><input type="checkbox" data-f="urgent" ${t.urgent ? 'checked' : ''} /> عاجل</label></div>
       <div class="prow static">${I('repeat')}<span>التكرار</span><select class="in sm" data-f="repeat" aria-label="التكرار"><option value="">لا يتكرر</option>${Object.entries(REPEATS).map(([k, v]) => `<option value="${k}"${t.repeat === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
-    </div>
-    <div class="pblk" id="assign">
+    </div>`}
+    ${work ? '' : `<div class="pblk" id="assign">
       <div class="prow static">${I('people', 'd')}<span>مُسندة إلى</span><input class="in sm" id="p-assignee" data-f="assignee" list="ppl" value="${esc(t.assignee || '')}" placeholder="أنا المسؤول" maxlength="40" /><datalist id="ppl">${ppl}</datalist></div>
       ${t.assignee ? `<button class="prow" data-act="pick-follow">${I('bell', 'd')}<span><b>المتابعة القادمة: ${t.followUp ? relDay(t.followUp) : 'بلا موعد'}</b><small>أُسندت ${t.assignedAt ? `قبل ${daysWord(Math.max(0, daysBetween(t.assignedAt, todayKey())))}` : ''}${followDue(t) ? '، وحان موعد المتابعة' : ''}</small></span>${I('fwd')}</button>
         <div class="hint"><button class="link" data-act="followed" data-id="${t.id}">تابعت اليوم</button></div>` : ''}
       ${!done ? `<button class="prow${isWaiting(t) ? ' on wait' : ''}" data-act="waiting" data-id="${t.id}" aria-pressed="${isWaiting(t)}">${I('hourglass', 'd')}<span>${isWaiting(t) ? `<b>بانتظار الاعتماد</b><small>منذ ${t.waitingSince ? relDay(t.waitingSince) : 'اليوم'}. لا تُحسب متأخرة عليك.</small>` : 'بانتظار اعتماد أو موافقة من غيري'}</span></button>` : ''}
       <button class="prow${meet ? ' on' : ''}" data-act="meeting-toggle" data-id="${t.id}" aria-pressed="${meet}">${I('meet', 'd')}<span>${meet ? 'اجتماع (اضغط لإلغاء)' : 'هذا اجتماع'}</span></button>
-    </div>
+    </div>`}
     <textarea class="pnotes" id="p-notes" data-f="notes" maxlength="4000" placeholder="ملاحظات، روابط، تفاصيل…" aria-label="ملاحظات">${esc(t.notes || '')}</textarea>
     </div>` : ''}
 
     <footer class="pfoot"><span>${done ? `أُنجزت ${fmtDate((t.completedAt || '').slice(0, 10))}` : t.createdAt ? `أُنشئت ${fmtDate(t.createdAt.slice(0, 10))}` : ''}</span>
-      <button class="ib" data-act="del-task" data-id="${t.id}" aria-label="حذف المهمة" title="حذف">${I('trash')}</button></footer>
+      ${work ? '' : `<button class="ib" data-act="del-task" data-id="${t.id}" aria-label="حذف المهمة" title="حذف">${I('trash')}</button>`}</footer>
   </div>`;
 }
 

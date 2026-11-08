@@ -20,7 +20,8 @@ export const aiState = () => {
   return 'ok';
 };
 export const AI_MSG = {
-  'no-ai': 'الإدخال الصوتي ومحضر الاجتماع جاهزان في الواجهة، ويعملان حين يُفعَّل الذكاء الاصطناعي على خادم ITrack (لاحقًا).',
+  'no-ai': 'الإدخال الصوتي ومحضر الاجتماع جاهزان، ويعملان حين يربط قسم تقنية المعلومات مزوّد الذكاء الاصطناعي ويفعّله مسؤول الجهة من «التشغيل والتكامل».',
+  403: 'الذكاء الاصطناعي معطّل في إعدادات جهتك (يفعّله المسؤول من «التشغيل والتكامل»).',
   'no-server': 'الإدخال الصوتي يعمل بعد تشغيل خادم التطبيق (الإعدادات ← التنبيهات).',
   signin: 'سجّل الدخول للمزامنة أولًا، فالخادم لا يقبل إلا طلباتك الموقّعة.',
   'no-mic': 'هذا المتصفح لا يسمح بتسجيل الصوت.',
@@ -38,7 +39,8 @@ async function call(path, body, raw = false, qs = '') {
   try {
     res = await fetch(`${base()}${globalThis.CC_BACKEND ? '/api/ai' : ''}${path}${qs}`, {
       method: 'POST',
-      headers: { 'content-type': raw ? 'text/plain' : 'application/json', authorization: `Bearer ${token}` },
+      // داخل ITrack: الجهة مطلوبة كي يُطبَّق مفتاح «الذكاء الاصطناعي» في إعداداتها
+      headers: { 'content-type': raw ? 'text/plain' : 'application/json', authorization: `Bearer ${token}`, ...(globalThis.CC_BACKEND?.org?.() ? { 'x-org': globalThis.CC_BACKEND.org() } : {}) },
       body: raw ? body : JSON.stringify(body),
     });
   } catch { throw Object.assign(new Error('net'), { code: 'net' }); }

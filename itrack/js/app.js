@@ -1,6 +1,9 @@
 // ITrack — الواجهة: الدخول، تقريري اليومي، لوحة الفريق، صفحة الموظف، الهيكل والموظفون، السجل، الإعدادات.
 // كل ما يظهر هنا يأتي من الخادم بعد تطبيق الصلاحيات؛ الواجهة لا تقرر من يرى ماذا.
 import { initAuth, signIn, signUp, redeemCode, changePassword, signOut, serverInfo, api } from './core.js';
+import { apiUrl } from '../config.js';
+import { session } from './session.js';
+import * as TR from './track.js';
 
 /* ═════════════ أدوات ═════════════ */
 const $ = (s, r = document) => r.querySelector(s);
@@ -34,6 +37,9 @@ const ACTION = {
   'section.create': 'أضاف قسمًا', 'section.update': 'عدّل قسمًا', 'department.create': 'أضاف إدارة', 'department.update': 'عدّل إدارة', 'position.create': 'أضاف وظيفة', 'position.update': 'عدّل توصيف وظيفة',
   'report.create': 'بدأ التقرير', 'report.submit': 'رفع التقرير', 'report.resubmit': 'أعاد رفع التقرير بعد التعديل',
   'report.approve': 'اعتمد التقرير', 'report.return': 'أعاد التقرير للتعديل', 'report.comment': 'أضاف ملاحظة',
+  'task.assign': 'أسند مهمة', 'task.edit': 'عدّل مهمة مسندة', 'task.cancel': 'ألغى مهمة مسندة', 'task.done': 'رفع مهمة منجزة', 'task.reopen': 'أعاد فتح مهمة',
+  'task.blocked': 'سجّل تعثّرًا', 'task.approve': 'اعتمد مهمة', 'task.return': 'أعاد مهمة للتعديل',
+  'settings.update': 'غيّر إعدادات التشغيل', 'key.create': 'أصدر مفتاح API', 'key.revoke': 'ألغى مفتاح API',
 };
 const chip = (st) => `<span class="st st-${st}">${STATUS[st] || st}</span>`;
 const store = { get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
@@ -43,7 +49,8 @@ const S = {
   user: undefined, me: null, org: store.get('it:org'), boot: null, err: null,
   cache: new Map(), loading: new Set(),
   draft: {}, dirty: {}, saveState: {}, // تقريري قيد التحرير لكل يوم
-  f: { dep: '', st: '' }, edit: { member: null, pos: null, dep: null, sec: null }, authTab: 'in',
+  f: { dep: '', st: '', tdep: '' }, edit: { member: null, pos: null, dep: null, sec: null, task: null }, authTab: 'in',
+  tp: '30', tv: null, tf: { st: 'open', kind: '', dep: '', member: '', q: '' }, af: null, calM: null, // المتابعة
   codes: {}, // رموز الدعوة/إعادة التعيين الصادرة في هذه الجلسة (تُعرض مرة واحدة)
   info: {}, // قدرات الخادم
 };
@@ -54,11 +61,21 @@ serverInfo().then((i) => { S.info = i || {}; render(); });
 const view = $('#view');
 
 /** تحميل بيانات مرة واحدة ثم إعادة الرسم. الشاشات تطلب ما تحتاجه فقط. */
+// بيانات تتغيّر بفعل غيرك (الموظف يرفع، المدير يعتمد): تُعرض فورًا من الذاكرة ثم تُحدَّث في الخلفية إن قدُمت
+const TTL = [['task|', 15000], ['asg', 20000], ['met|', 30000], ['inbox', 30000]];
+const cacheAt = new Map();
 function need(key, loader) {
-  if (S.cache.has(key)) return S.cache.get(key);
+  if (S.cache.has(key)) {
+    const ttl = TTL.find(([p]) => key.startsWith(p))?.[1];
+    if (ttl && Date.now() - (cacheAt.get(key) || 0) > ttl && !S.loading.has(key)) {
+      S.loading.add(key);
+      loader().then((d) => { S.cache.set(key, d); cacheAt.set(key, Date.now()); }, () => {}).finally(() => { S.loading.delete(key); render(); });
+    }
+    return S.cache.get(key);
+  }
   if (!S.loading.has(key)) {
     S.loading.add(key);
-    loader().then((d) => S.cache.set(key, d), (e) => S.cache.set(key, { error: e.message, code: e.code }))
+    loader().then((d) => { S.cache.set(key, d); cacheAt.set(key, Date.now()); }, (e) => S.cache.set(key, { error: e.message, code: e.code }))
       .finally(() => { S.loading.delete(key); render(); });
   }
   return undefined;
@@ -67,7 +84,8 @@ const drop = (...prefixes) => { for (const k of [...S.cache.keys()]) if (prefixe
 const call = (m, p, b) => api(m, p, b, S.org);
 /** ما ينتظرني: تقارير لأراجعها، وتقاريري المُعادة للتعديل. يُحدَّث عند كل تنقّل. */
 const inbox = () => (S.boot ? need('inbox', () => call('GET', `/api/inbox?today=${today()}`)) : undefined);
-const reviewCount = () => { const x = S.cache.get('inbox'); return x && !x.error ? x.review.length : 0; };
+const reviewCount = () => { const x = S.cache.get('inbox'); return x && !x.error ? x.review.length + (x.team?.pending?.length || 0) : 0; };
+const unreadCount = () => { const x = S.cache.get('inbox'); return x && !x.error ? (x.unread || 0) : 0; };
 
 const members = () => S.boot?.members || [];
 const memberById = (id) => members().find((m) => m.id === id);
@@ -81,17 +99,21 @@ const teamList = () => members().filter((m) => m.id !== S.boot.me.id && m.email 
 
 /* ═════════════ التنقل ═════════════ */
 function route() {
-  const [name = '', a = '', b = ''] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  return { name, a, b };
+  const [name = '', a = '', b = '', c = ''] = location.hash.replace(/^#\/?/, '').replace(/\?.*$/, '').split('/').map(decodeURIComponent);
+  return { name, a, b, c };
 }
-function home() { return hasTeam() ? '#/team' : '#/day'; }
+function home() { return hasTeam() ? '#/track' : '#/day'; }
 // الصندوق يُحدَّث عند العودة للتبويب أو بعد ٣٠ ثانية، لا عند كل تنقّل (يوفّر ٦ استعلامات لكل شاشة)
 let inboxAt = 0;
 const freshInbox = () => { if (Date.now() - inboxAt > 30000) { drop('inbox'); inboxAt = Date.now(); } };
 // الهيكل يُعاد تحميله عند فتحه (من انضم أو تغيّرت حالته منذ آخر تحميل)
 let bootAt = Date.now();
 const freshBoot = () => { if (S.boot && route().name === 'org' && Date.now() - bootAt > 5000) { bootAt = Date.now(); loadBoot(true); } };
-window.addEventListener('hashchange', () => { freshInbox(); freshBoot(); render(); window.scrollTo(0, 0); });
+// الانتقال لشاشة متابعة يطلب نسخة جديدة في الخلفية (مع عرض المخزّن فورًا)، واللوحة المفتوحة تتحدّث كل ٢٠ ثانية
+const LIVE = /^(task\||asg|met\|)/;
+const staleLive = () => { for (const k of cacheAt.keys()) if (LIVE.test(k)) cacheAt.set(k, 0); };
+window.addEventListener('hashchange', () => { freshInbox(); freshBoot(); staleLive(); render(); window.scrollTo(0, 0); });
+setInterval(() => { if (document.visibilityState === 'visible' && S.boot && route().name === 'track' && !document.activeElement?.closest?.('form')) render(); }, 20000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.boot) { drop('inbox', 'day|'); inboxAt = Date.now(); render(); } });
 
 /* ═════════════ الرسم ═════════════ */
@@ -125,15 +147,15 @@ function paintNav() {
   const items = [
     ['day', '#/day', 'today', 'يومي'],
     ['my', 'my/', 'note', 'مهامي'], // مساحتي الشخصية (واجهة مركز القيادة داخل ITrack)
-    hasTeam() && ['team', '#/team', 'people', 'الفريق'],
+    hasTeam() && ['track', '#/track', 'people', 'المتابعة'],
     isAdmin() && ['org', '#/org', 'doc', 'الهيكل'],
     isAdmin() && ['audit', '#/audit', 'list', 'السجل'],
     ['settings', '#/settings', 'gear', 'الإعدادات'],
   ].filter(Boolean);
-  const cur = (k) => (k === r || (k === 'team' && r === 'm') ? ' aria-current="page"' : '');
-  const rc = hasTeam() ? reviewCount() : 0;
-  const badge = (k) => (k === 'team' && rc ? `<em aria-label="${n(rc)} بانتظار مراجعتك">${n(rc)}</em>` : '');
-  const nav = items.map(([k, h, ic, l]) => `<a href="${h}"${cur(k)}>${I(ic, ['day', 'team', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span>${badge(k)}</a>`).join('');
+  const cur = (k) => (k === r || (k === 'track' && ['team', 'm'].includes(r)) ? ' aria-current="page"' : '');
+  const rc = hasTeam() ? reviewCount() : 0; const un = unreadCount();
+  const badge = (k) => (k === 'track' && rc ? `<em aria-label="${n(rc)} بانتظار قرارك">${n(rc)}</em>` : k === 'day' && un ? `<em aria-label="${n(un)} تنبيه جديد">${n(un)}</em>` : '');
+  const nav = items.map(([k, h, ic, l]) => `<a href="${h}"${cur(k)}>${I(ic, ['day', 'track', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span>${badge(k)}</a>`).join('');
   const navEl = $('#nav'); if (navEl.innerHTML !== nav) navEl.innerHTML = nav;
   const tb = $('.tabbar'); if (tb.innerHTML !== nav) tb.innerHTML = nav;
   const org = `<b>${esc(S.boot.org.name)}</b><span>${esc(S.boot.me.name)} · ${ROLE[myRole()]}</span>`;
@@ -157,6 +179,7 @@ function screen() {
   switch (r.name) {
     case 'day': return vDay(isDay(r.a) && r.a <= today() ? r.a : today());
     case 'team': return hasTeam() ? vTeam(isDay(r.a) && r.a <= today() ? r.a : today()) : deny();
+    case 'track': return hasTeam() ? TR.vTrack(r.a, r.b, r.c) : deny();
     case 'm': return vMember(r.a, isDay(r.b) && r.b <= today() ? r.b : today());
     case 'org': return isAdmin() ? vOrg(r.a || 'members') : deny();
     case 'audit': return isAdmin() ? vAudit() : deny();
@@ -254,7 +277,7 @@ function jdCard(member, hist, span = 14) {
   return `<div class="card"><h2>${I('doc')}${esc(pos.title)}</h2>
     ${pos.summary ? `<p class="hint" style="margin-bottom:10px">${esc(pos.summary)}</p>` : ''}
     <p class="hint" style="margin-bottom:10px">عدد البنود لكل مسؤولية في آخر ${n(span)} يومًا. المظلَّل لم يُعمل عليه.</p>
-    <ul class="jd">${active.map((r) => { const c = cov.get(r.id); return `<li class="${c ? '' : 'cold'}"><div style="flex:1"><b>${esc(r.title)}</b>${r.detail ? `<p>${esc(r.detail)}</p>` : ''}${c ? `<div class="bar" aria-hidden="true"><i style="width:${Math.round((c.n / max) * 100)}%"></i></div>` : ''}</div><span class="cnt">${c ? `${n(c.n)}${c.minutes ? ` · ${mins(c.minutes)}` : ''}` : 'لا شيء'}</span></li>`; }).join('')}
+    <ul class="jd">${active.map((r) => { const c = cov.get(r.id); return `<li class="${c ? '' : 'cold'}"><div style="flex:1"><b>${esc(r.title)}</b>${r.freq ? ` <span class="tag duty-t">واجب ${TR.FREQ[r.freq]}</span>` : ''}${r.detail ? `<p>${esc(r.detail)}</p>` : ''}${c ? `<div class="bar" aria-hidden="true"><i style="width:${Math.round((c.n / max) * 100)}%"></i></div>` : ''}</div><span class="cnt">${c ? `${n(c.n)}${c.minutes ? ` · ${mins(c.minutes)}` : ''}` : 'لا شيء'}</span></li>`; }).join('')}
     ${out ? `<li><div><b>خارج التوصيف</b></div><span class="cnt">${n(out.n)}</span></li>` : ''}</ul>
     <p class="hint" style="margin-top:10px">إصدار التوصيف ${n(pos.version)}</p></div>`;
 }
@@ -314,6 +337,7 @@ function vDay(d) {
         <label class="sr-only" for="new-item">بند جديد</label>
         <textarea id="new-item" class="in auto" name="text" rows="1" maxlength="600" required data-k="new-item" placeholder="ماذا أنجزت؟ بند واحد في كل مرة، ثم Enter"></textarea>
         <div class="row"><select class="in grow" name="responsibility_id" aria-label="المسؤولية">${respOpts('')}</select><select class="in" name="minutes" aria-label="المدة" style="width:auto">${minOpts(null)}</select><button class="btn accent" type="submit">${I('plus')}أضف</button></div>
+        ${d === today() || d === addD(today(), -1) ? `<button type="button" class="btn sm fill" data-act="fill-day" data-d="${d}">${I('list')}املأ التقرير من مهامي ${rel(d) === 'اليوم' ? 'اليوم' : rel(d)}</button>` : ''}
       </form>` : '';
     const note = editable
       ? `<label class="fld" style="margin-top:14px"><span>ملاحظة لمديرك (اختياري)</span><textarea class="in auto" rows="2" maxlength="2000" data-k="note" data-edit="note" placeholder="عوائق، طلبات، أو ما يحتاج قرارًا">${esc(dr.note)}</textarea></label>`
@@ -331,7 +355,7 @@ function vDay(d) {
   const back = ib && !ib.error ? ib.returned.filter((x) => x.date !== d) : [];
   const backNote = back.length ? `<div class="notice warn" role="status"><b>${back.length === 1 ? 'تقرير مُعاد لك للتعديل' : `${n(back.length)} تقارير مُعادة لك للتعديل`}</b><p>${back.map((x) => `<a class="link" href="#/day/${x.date}">${rel(x.date)}</a>${x.review_comment ? `: ${esc(x.review_comment.slice(0, 80))}` : ''}`).join('<br>')}</p></div>` : '';
   return `<div class="wrap">${vh('يومي', `${esc(S.boot.me.name)}${pos ? ` · ${esc(pos.title)}` : ''}`, chip(st))}
-    ${backNote}${dayBar('#/day', d, hist)}
+    ${TR.notesCard()}${backNote}${dayBar('#/day', d, hist)}
     <div class="grid2"><div class="card"><h2>${I('note')}ما أنجزته ${rel(d) === 'اليوم' ? 'اليوم' : `يوم ${rel(d)}`}</h2>${body}</div>
     <div class="stack">${jdCard(S.boot.me, hist && !hist.error ? hist : null)}${rep && !rep.error ? trailCard(rep.trail) : ''}</div></div></div>`;
 }
@@ -438,7 +462,7 @@ function vTeam(d) {
   const ib = inbox();
   const queue = ib && !ib.error ? ib.review : [];
   const qCard = queue.length ? `<div class="card queue"><h2>${I('hourglass')}بانتظار مراجعتك · ${n(queue.length)}</h2><div class="people">${queue.slice(0, 5).map((x) => { const m = memberById(x.member_id); return m ? `<a class="person" href="#/m/${encodeURIComponent(m.id)}/${x.date}">${avatar(m.name)}<div class="who"><b>${esc(m.name)}</b><small>تقرير ${rel(x.date)}${x.submitted_at ? ` · رُفع ${fTime.format(new Date(x.submitted_at))}` : ''}</small></div>${x.late ? '<span class="tag late">متأخر</span>' : ''}${x.date < addD(today(), -2) ? '<span class="tag blocked">ينتظر منذ أيام</span>' : ''}</a>` : ''; }).join('')}</div>${queue.length > 5 ? `<p class="hint" style="margin-top:8px">و${n(queue.length - 5)} غيرها. اختر إدارة من الملخص أعلاه أو صنّف «بانتظار المراجعة».</p>` : ''}</div>` : '';
-  return `<div class="wrap">${vh('الفريق', isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير')}
+  return `<div class="wrap">${vh('المتابعة', `التقارير اليومية · ${isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير'}`)}${TR.tabs('team')}
     ${dayBar('#/team', d, null).replace(/<ol class="strip"[\s\S]*<\/ol>/, '')}
     ${list.length ? kpis : ''}${rollup}${qCard}<div class="card">${list.length ? filters : ''}${body}<p class="hint" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div></div>`;
 }
@@ -471,7 +495,7 @@ function vMember(id, d) {
   const st = rep && !rep.error ? (rep.report?.status || 'none') : 'none';
   const mgr = memberById(m.manager_id);
   const sub = [pos?.title, depById(m.department_id)?.name, mgr ? `يتبع ${mgr.name}` : ''].filter(Boolean).map(esc).join(' · ');
-  return `<div class="wrap"><p style="margin:0 0 10px"><a class="link" style="color:var(--on-bg)" href="#/team/${d}">← الفريق</a></p>
+  return `<div class="wrap"><p style="margin:0 0 10px"><a class="link" style="color:var(--on-bg)" href="#/team/${d}">← التقارير اليومية</a> · <a class="link" style="color:var(--on-bg)" href="#/track/m/${encodeURIComponent(id)}">مؤشرات ${esc(m.name)}</a></p>
     ${vh(esc(m.name), sub, chip(st))}
     ${dayBar(base, d, hist && !hist.error ? hist : null)}
     <div class="grid2"><div class="card"><h2>${I('note')}تقرير ${rel(d)}</h2>${body}</div>
@@ -480,8 +504,8 @@ function vMember(id, d) {
 
 /* ═════════════ الهيكل (المسؤول) ═════════════ */
 function vOrg(tab) {
-  const tabs = `<nav class="tabs" aria-label="أقسام الهيكل">${[['members', 'الأعضاء'], ['positions', 'الوظائف والتوصيف'], ['departments', 'الإدارات']].map(([k, l]) => `<a href="#/org/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
-  const body = tab === 'positions' ? orgPositions() : tab === 'departments' ? orgDeps() : orgMembers();
+  const tabs = `<nav class="tabs" aria-label="أقسام الهيكل">${[['members', 'الأعضاء'], ['positions', 'الوظائف والتوصيف'], ['departments', 'الإدارات'], ['ops', 'التشغيل والتكامل']].map(([k, l]) => `<a href="#/org/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+  const body = tab === 'positions' ? orgPositions() : tab === 'departments' ? orgDeps() : tab === 'ops' ? TR.vOps() : orgMembers();
   return `<div class="wrap">${vh('الهيكل', esc(S.boot.org.name))}${tabs}${body}</div>`;
 }
 const opt = (v, l, sel) => `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(l)}</option>`;
@@ -537,12 +561,15 @@ function posEditor(p) {
   const rrow = (r, i) => `<div class="resp-row"><input type="hidden" name="rid" value="${esc(r?.id || '')}" />
       <input class="in" name="rt" maxlength="160" value="${esc(r?.title || '')}" placeholder="المسؤولية (مثال: استلام الشحنات ومطابقتها)" aria-label="المسؤولية ${n(i + 1)}" />
       <textarea class="in auto" name="rd" rows="1" maxlength="800" placeholder="التفاصيل أو معيار الإنجاز (اختياري)" aria-label="تفاصيل المسؤولية ${n(i + 1)}">${esc(r?.detail || '')}</textarea>
+      <div class="duty"><select class="in" name="rf" aria-label="تكرار المسؤولية ${n(i + 1)}">${Object.entries(TR.FREQ).map(([k, l]) => `<option value="${k}"${(r?.freq || '') === k ? ' selected' : ''}>${k ? `واجب ${l}` : l}</option>`).join('')}</select>
+        <select class="in" name="rp" aria-label="الأولوية">${[1, 2, 3].map((p) => `<option value="${p}"${(r?.prio || 1) === p ? ' selected' : ''}>${TR.PR[p]}</option>`).join('')}</select>
+        <select class="in" name="re" aria-label="الوقت المتوقع"><option value="">المدة</option>${[15, 30, 45, 60, 90, 120, 180, 240].map((m) => `<option value="${m}"${r?.est === m ? ' selected' : ''}>${mins(m)}</option>`).join('')}</select></div>
       <div class="acts"><button type="button" class="ib" data-act="resp-up" aria-label="أعلى">${I('down')}</button><button type="button" class="ib" data-act="resp-del" aria-label="حذف">${I('trash')}</button></div></div>`;
   return `<form class="form-grid" data-form="position" data-id="${esc(p?.id || '')}">
     <div class="form-grid two"><label class="fld"><span>المسمّى الوظيفي</span><input class="in" name="title" required maxlength="100" value="${esc(p?.title || '')}" /></label>
     <label class="fld"><span>الإدارة</span><select class="in" name="department_id"><option value="">—</option>${deps.map((x) => opt(x.id, x.name, p?.department_id)).join('')}</select></label></div>
     <label class="fld"><span>الغرض من الوظيفة</span><textarea class="in auto" name="summary" rows="2" maxlength="1000">${esc(p?.summary || '')}</textarea></label>
-    <div><p class="hint" style="margin-bottom:8px">المسؤوليات: كل بند يكتبه الموظف يُربط بواحدة منها. حذف مسؤولية يعطّلها فقط، فتبقى التقارير القديمة كما هي.</p>
+    <div><p class="hint" style="margin-bottom:8px">المسؤوليات: كل بند يكتبه الموظف يُربط بواحدة منها. اجعل المسؤولية «واجبًا يوميًا أو أسبوعيًا أو شهريًا» فتظهر تلقائيًا في مهام كل من يشغل الوظيفة، وتُحسب في مؤشراته. حذف مسؤولية يعطّلها فقط.</p>
     <div class="resp-rows">${(rs.length ? rs : [null, null, null]).map(rrow).join('')}</div>
     <button type="button" class="btn sm" data-act="resp-add" style="margin-top:8px">${I('plus')}مسؤولية</button></div>
     <div class="row"><button class="btn primary" type="submit">حفظ${p ? ` (الإصدار ${n(p.version + 1)} إن تغيّر شيء)` : ''}</button><button type="button" class="btn" data-act="edit-pos" data-id="">إلغاء</button></div>
@@ -555,7 +582,7 @@ function orgPositions() {
   return `<div class="grid2"><div class="stack">${editing === 'new' ? `<div class="card"><h2>${I('plus')}وظيفة جديدة</h2>${posEditor(null)}</div>` : ''}
     ${list.length ? list.map((p) => (editing === p.id ? `<div class="card"><h2>${I('doc')}تعديل: ${esc(p.title)}</h2>${posEditor(p)}</div>` : `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${I('doc')}${esc(p.title)}</h2><button class="btn sm" data-act="edit-pos" data-id="${esc(p.id)}">تعديل</button></div>
       <p class="hint" style="margin:6px 0 10px">${esc(depById(p.department_id)?.name || 'بلا إدارة')} · ${n(holders(p.id))} موظف · الإصدار ${n(p.version)}</p>
-      ${p.summary ? `<p style="margin:0 0 10px">${esc(p.summary)}</p>` : ''}<ul class="jd">${p.responsibilities.filter((r) => r.active).map((r) => `<li><div><b>${esc(r.title)}</b>${r.detail ? `<p>${esc(r.detail)}</p>` : ''}</div></li>`).join('') || '<li class="cold"><div>لا مسؤوليات بعد.</div></li>'}</ul></div>`)).join('')
+      ${p.summary ? `<p style="margin:0 0 10px">${esc(p.summary)}</p>` : ''}<ul class="jd">${p.responsibilities.filter((r) => r.active).map((r) => `<li><div><b>${esc(r.title)}</b>${r.detail ? `<p>${esc(r.detail)}</p>` : ''}</div>${r.freq ? `<span class="tag duty-t">واجب ${TR.FREQ[r.freq]}${r.prio > 1 ? ` · ${TR.PR[r.prio]}` : ''}</span>` : ''}</li>`).join('') || '<li class="cold"><div>لا مسؤوليات بعد.</div></li>'}</ul></div>`)).join('')
       : editing !== 'new' ? '<div class="card"><div class="empty"><p>لا وظائف بعد. ابدأ بأكثر وظيفة تكرارًا في فريقك.</p></div></div>' : ''}</div>
     <div class="stack"><div class="card"><h2>${I('doc')}التوصيف الوظيفي</h2><p class="hint">اكتب لكل وظيفة مسؤولياتها الثابتة بلغة قابلة للقياس. كل بند يومي يُربط بمسؤولية، فترى أين يذهب وقت الفريق وما المُهمَل.</p>
       ${editing === 'new' ? '' : `<button class="btn primary" data-act="edit-pos" data-id="new" style="margin-top:12px">${I('plus')}وظيفة جديدة</button>`}</div></div></div>`;
@@ -601,7 +628,7 @@ function vSettings() {
       <label class="fld"><span>الحالية</span><input class="in" type="password" name="old" required autocomplete="current-password" dir="ltr" /></label>
       <label class="fld"><span>الجديدة (٨ أحرف على الأقل)</span><input class="in" type="password" name="pass" required minlength="8" autocomplete="new-password" dir="ltr" /></label>
       <label class="fld"><span>تأكيد الجديدة</span><input class="in" type="password" name="pass2" required minlength="8" autocomplete="new-password" dir="ltr" /></label>
-      <button class="btn" type="submit">تغيير</button></form></div></div>
+      <button class="btn" type="submit">تغيير</button></form></div>${TR.icsCard()}</div>
     <div class="card"><h2>${I('doc')}عن ITrack</h2><p class="hint">نسخة تجريبية. بياناتك في خادم الجهة، والصلاحيات تُفرض في الخادم. كل رفع واعتماد وإعادة يُسجَّل في سجل لا يُعدَّل.</p></div></div></div>`;
 }
 
@@ -615,7 +642,19 @@ document.addEventListener('click', async (e) => {
   if (!el || el.tagName === 'SELECT') return;
   const act = el.dataset.act;
   const d = curDay();
+  if (TR.click(act, el) || TR.clickEmployee(act)) return;
   switch (act) {
+    case 'fill-day': {
+      const dr = S.draft[d]; if (!dr) break;
+      el.disabled = true;
+      try {
+        const add = (await TR.draftFromTasks(d)).filter((x) => !dr.items.some((y) => y.text === x.text));
+        if (!add.length) { toast('لا جديد في مهامك لهذا اليوم: أنجز أو حدّث نسبة مهمة أولًا.'); el.disabled = false; break; }
+        dr.items.push(...add.slice(0, 30 - dr.items.length)); touch(d); render();
+        toast(`أُضيف ${n(add.length)} بند من مهامك. راجعها ثم ارفع التقرير.`);
+      } catch (er) { toast(er.message); el.disabled = false; }
+      break;
+    }
     case 'fdep-set': S.f.dep = S.f.dep === el.dataset.v ? '' : el.dataset.v; render(); break;
     case 'auth-tab': S.authTab = el.dataset.v; render(); break;
     case 'reset': S.authTab = 'code'; render(); toast('اطلب من مسؤول جهتك «رمز إعادة تعيين» ثم أدخله هنا.'); break;
@@ -667,6 +706,7 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
+  if (TR.input(el)) return;
   if (el.dataset.act === 'fdep') { S.f.dep = el.value; render(); return; }
   if (el.dataset.edit && el.tagName === 'SELECT') {
     const d = curDay(); const it = S.draft[d]?.items[+el.dataset.i]; if (!it) return;
@@ -677,6 +717,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.matches('textarea.auto')) autosize(el);
+  if (el.type !== 'checkbox' && (el.dataset.af !== undefined || el.dataset.tq !== undefined)) { TR.input(el); return; }
   if (!el.dataset.edit || el.tagName === 'SELECT') return;
   const d = curDay(); const dr = S.draft[d]; if (!dr) return;
   if (el.dataset.edit === 'note') dr.note = el.value;
@@ -698,6 +739,7 @@ document.addEventListener('submit', async (e) => {
   const fd = new FormData(form);
   const get = (k) => (fd.get(k) || '').toString().trim();
   const btn = e.submitter;
+  if (await TR.submit(form, fd, btn)) return;
   switch (form.dataset.form) {
     case 'auth': {
       if (btn) btn.disabled = true;
@@ -760,8 +802,8 @@ document.addEventListener('submit', async (e) => {
     }
     case 'position': {
       const id = form.dataset.id;
-      const rids = fd.getAll('rid'); const rts = fd.getAll('rt'); const rds = fd.getAll('rd');
-      const body = { title: get('title'), department_id: get('department_id') || null, summary: get('summary'), responsibilities: rts.map((t, i) => ({ id: rids[i] || undefined, title: String(t).trim(), detail: String(rds[i] || '').trim() })).filter((r) => r.title) };
+      const rids = fd.getAll('rid'); const rts = fd.getAll('rt'); const rds = fd.getAll('rd'); const rfs = fd.getAll('rf'); const rps = fd.getAll('rp'); const res = fd.getAll('re');
+      const body = { title: get('title'), department_id: get('department_id') || null, summary: get('summary'), responsibilities: rts.map((t, i) => ({ id: rids[i] || undefined, title: String(t).trim(), detail: String(rds[i] || '').trim(), freq: String(rfs[i] || ''), prio: Number(rps[i]) || 1, est: Number(res[i]) || null })).filter((r) => r.title) };
       const ok = await mutate(() => (id ? call('PUT', `/api/positions/${id}`, body) : call('POST', '/api/positions', body)), 'حُفظ التوصيف.');
       if (ok) { S.edit.pos = null; render(); }
       break;
@@ -811,6 +853,12 @@ async function loadBoot(quiet) {
   }
   render();
 }
+
+S.tv = store.get('it:tv') || 'list';
+TR.init({
+  S, need, drop, call, render, toast, esc, I, n, avatar, memberById, posById, depById, secById, members, isAdmin, hasTeam, today, addD, parse, keyOf, rel, mins,
+  vh, loadingCard, errCard, deny, ROLE, ACTION, fShort, fTime, inbox, store, loadBoot, apiUrl, session,
+});
 
 initAuth((u) => {
   const was = S.user?.uid;

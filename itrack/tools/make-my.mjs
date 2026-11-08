@@ -20,9 +20,13 @@ export function build() {
     import { session } from '../js/session.js';
     const org = () => { try { return JSON.parse(localStorage.getItem('it:org')); } catch (e) { return null; } };
     if (!org() || !session()) location.replace('../'); // الدخول واختيار الجهة من ITrack أولًا
-    // الذكاء الاصطناعي (الصوت والمحضر) يُفعَّل تلقائيًا إن وفّره خادم الجهة
-    const info = await fetch(apiUrl + '/api/health').then((r) => r.json()).catch(() => ({}));
-    globalThis.CC_BACKEND = { api: apiUrl, ai: !!info.ai, org };
+    // الذكاء الاصطناعي (الصوت والمحضر والتقسيم) يظهر فقط إن ربطته تقنية المعلومات على الخادم وفعّله مسؤول الجهة
+    const head = { authorization: 'Bearer ' + (session() && session().token), 'x-org': org() };
+    const [info, set] = await Promise.all([
+      fetch(apiUrl + '/api/health').then((r) => r.json()).catch(() => ({})),
+      fetch(apiUrl + '/api/settings', { headers: head }).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+    ]);
+    globalThis.CC_BACKEND = { api: apiUrl, ai: !!info.ai && !!(set.feat && set.feat.ai), org, feat: set.feat || {} };
     await import('../../js/app.js');
   </script>`);
   must('<nav id="nav" class="nav"></nav>', '<a class="ni itrack-back" href="../" data-nosync><svg class="ic" aria-hidden="true"><use href="#d-people"/></svg><span>العمل: تقريري والفريق</span></a>\n      <nav id="nav" class="nav"></nav>');

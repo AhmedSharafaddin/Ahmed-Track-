@@ -11,6 +11,7 @@ import {
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
+import { isWork, hydrate, onWork, uploadPhoto, postComment, aiSteps, syncSoon } from './work.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view');
@@ -79,6 +80,7 @@ function paint() {
     const ph = pane(t);
     if (ph !== last.pane) { paneEl.innerHTML = ph; last.pane = ph; autosize($('#p-title')); paneEl.querySelectorAll('textarea.sin').forEach(autosize); }
     paneEl.dataset.id = t ? t.id : '';
+    if (isWork(t)) hydrate(t); // صور الإنجاز والنقاش من الخادم
   }
   forcePane = false;
 
@@ -340,10 +342,16 @@ function setSteps(id, fn) {
 function done(id) {
   const t = taskById(id);
   const wasOpen = t && isOpen(t);
+  // المهمة التي تتطلب صورة إنجاز: لا تُعلَّم منجزة قبلها (الخادم يرفض أيضًا)
+  if (wasOpen && isWork(t) && t.asg.photo && !(t.photos || []).length) {
+    ui.sel = id; forcePane = true; render(); toast('أرفق صورة الإنجاز أولًا، ثم علّمها منجزة.'); return;
+  }
   const msg = toggleTask(id);
   if (wasOpen) { ui.justDone = id; setTimeout(() => { ui.justDone = null; }, 700); }
+  if (isWork(t)) { syncSoon(); if (wasOpen) { toast(t.asg.review ? 'رُفعت منجزة. وصلت لمديرك للاعتماد.' : 'رُفعت منجزة، ووصلت لمديرك.'); return; } }
   if (msg) toast(msg);
 }
+onWork(() => { forcePane = true; render(); });
 
 /** تعبئة حقول الموعد المخفية في نموذج الإضافة السريعة، وعرضها على الزر. */
 function setQuickDate(form, v) {
@@ -426,9 +434,23 @@ document.addEventListener('click', (e) => {
     case 'focus-steps': $('#p-newstep')?.focus(); break;
     case 'focus-assign': $('#p-assignee')?.focus(); break;
     case 'reset-slips': forcePane = true; updateTask(ui.sel, { slips: 0, snoozes: 0 }); break;
+    case 'set-prog': { forcePane = true; updateTask(ui.sel, { prog: Number(el.dataset.v) || 0 }); break; }
+    case 'block': ui.blocking = ui.sel; forcePane = true; render(); setTimeout(() => $('[data-f="blocked"]')?.focus(), 40); break;
+    case 'unblock': ui.blocking = null; forcePane = true; updateTask(ui.sel, { blocked: '' }); toast('سُجّل أن العائق زال.'); break;
+    case 'ai-steps': {
+      const t = taskById(ui.sel); if (!t || el.disabled) break;
+      el.disabled = true; el.textContent = 'يقترح خطوات…';
+      aiSteps(t).then((list) => {
+        if (!list.length) { toast('لم يقترح خطوات. جرّب وصفًا أوضح.'); return; }
+        setSteps(t.id, (s) => [...s, ...list.map((title) => ({ id: uid(), title, done: false }))]);
+        toast(`أُضيفت ${n(list.length)} خطوات مقترحة. احذف ما لا يلزم.`);
+      }, (er) => toast(er.message)).finally(() => { forcePane = true; render(); });
+      break;
+    }
     case 'del-task': {
       const t = taskById(id);
       if (!t) break;
+      if (isWork(t)) { toast('المهمة المسندة يلغيها من أسندها.'); break; }
       store.remove('tasks', id);
       ui.sel = null;
       toast('حُذفت المهمة.', () => store.put('tasks', t));
@@ -538,6 +560,11 @@ function maybeAskNotify() {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.act === 'import' && el.files[0]) { importData(el.files[0]).finally(() => { el.value = ''; }); return; }
+  if (el.dataset.act === 'photo-up' && el.files[0]) {
+    const t = taskById(ui.sel); const file = el.files[0]; el.value = '';
+    if (t) uploadPhoto(t, file).then((fid) => { if (fid) { forcePane = true; updateTask(t.id, { photos: [...(t.photos || []), fid], warn: null }); toast('أُرفقت الصورة.'); } }, (er) => toast(er.message));
+    return;
+  }
   if (el.dataset.tf) {
     if (el.dataset.tf === 'status') { location.hash = el.value === 'open' ? '#/all' : `#/all/${el.value}`; return; }
     if (el.dataset.tf !== 'q') { ui.tf[el.dataset.tf] = el.value; render(); }
@@ -593,6 +620,13 @@ document.addEventListener('submit', (e) => {
   const on = (k) => fd.get(k) === 'on';
 
   switch (form.dataset.form) {
+    case 'wk-comment': {
+      const body = get('body'); const tid = ui.sel;
+      if (!body || !tid) return;
+      const btn = form.querySelector('button'); btn.disabled = true;
+      postComment(tid, body).then(() => { form.reset(); toast('أُرسل.'); }, (er) => toast(er.message)).finally(() => { btn.disabled = false; });
+      return;
+    }
     case 'quick': {
       const raw = get('title');
       if (!raw) return;
@@ -769,6 +803,7 @@ document.addEventListener('drop', (e) => {
   q.classList.remove('over');
   const id = e.dataTransfer.getData('text/plain');
   const k = q.dataset.quad;
+  if (id && isWork(taskById(id))) { toast('أولوية المهمة المسندة يحددها من أسندها.'); return; }
   if (id) updateTask(id, { important: k === 'q1' || k === 'q2', urgent: k === 'q1' || k === 'q3' });
 });
 

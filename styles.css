@@ -1361,3 +1361,45 @@ html[dir="rtl"] .db-col::after { transform: translateX(50%); }
 
 /* وسم الربع في لوحة المهمة: اللوحة داكنة في petrol/navy على الجوال أيضًا (كانت القاعدة للشاشات الكبيرة فقط) */
 :root[data-theme="petrol"] .pane .quadtag, :root[data-theme="navy"] .pane .quadtag { color: #f4efe3; background: rgba(255,255,255,.12); }
+
+/* ═════════ المهمة المسندة والواجب داخل «مهامي» (ITrack) ═════════
+   تُميَّز بشريط جانبي وشارة «من فلان»؛ ما حدده المدير يظهر ثابتًا، والتنفيذ (النسبة، التفاصيل، التعثّر، الصور، النقاش) في كتلة واحدة. */
+li.t.work { box-shadow: inset -3px 0 0 var(--accent); }
+.m.m-work { color: var(--accent); font-weight: 600; }
+.m.m-ok { color: var(--accent); }
+.quadtag.wk-tag { background: var(--accent-soft); color: var(--accent); }
+.pblk.work { display: grid; gap: 10px; padding: 12px 14px; overflow: visible; }
+.pblk.work .prow { padding-inline: 0; border-bottom: 0; min-height: 44px; }
+.wk-h { display: flex; gap: 10px; align-items: flex-start; color: var(--ink); }
+.wk-h span { display: grid; gap: 2px; }
+.wk-h small { color: var(--muted); font-size: .8rem; line-height: 1.5; }
+.wk-h small .ic { width: 13px; height: 13px; vertical-align: -2px; }
+.wk-desc { margin: 0; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; color: var(--ink-2); font-size: .92rem; line-height: 1.7; white-space: pre-wrap; }
+.wk-n { padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--ink); font-size: .9rem; }
+.wk-n b { display: flex; gap: 6px; align-items: center; }
+.wk-n p { margin: 4px 0 0; color: var(--ink-2); }
+.wk-n.warn { background: color-mix(in oklab, var(--danger) 12%, var(--surface)); }
+.wk-n.warn b { color: var(--danger); }
+.wk-n.ok b { color: var(--accent); }
+.wk-f { display: grid; gap: 6px; font-size: .85rem; color: var(--muted); }
+.wk-f .in { width: 100%; font: inherit; font-size: .95rem; color: var(--ink); }
+.wk-bl span { color: var(--danger); display: flex; gap: 6px; align-items: center; }
+.wk-ph { display: flex; flex-wrap: wrap; gap: 8px; }
+.wk-ph img, .ph-ld { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; border: 1px solid var(--line); display: block; }
+.ph-ld { background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 200% 100%; animation: wkshim 1.2s linear infinite; }
+@keyframes wkshim { to { background-position: -200% 0; } }
+.wk-add { width: 72px; height: 72px; border-radius: 10px; border: 1.5px dashed var(--line-2); display: grid; place-content: center; justify-items: center; gap: 2px; color: var(--accent); font-size: .8rem; cursor: pointer; }
+.wk-add:hover, .wk-add:focus-within { border-color: var(--accent); background: var(--accent-soft); }
+.wk-add.busy { opacity: .6; pointer-events: none; }
+.wk-th { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; }
+.wk-th .wk-lbl { margin: 0; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: .85rem; }
+.wk-c { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 260px; overflow: auto; }
+.wk-c li { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
+.wk-c b { font-size: .85rem; color: var(--ink); }
+.wk-c time { margin-inline-start: 8px; font-size: .75rem; color: var(--muted); }
+.wk-c p { margin: 3px 0 0; font-size: .92rem; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-cf { display: flex; gap: 8px; align-items: flex-end; }
+.wk-cf textarea { flex: 1; min-height: 40px; resize: vertical; font: inherit; }
+.ai-steps { display: inline-flex; gap: 6px; align-items: center; margin: 6px 4px 2px; font-size: .88rem; }
+.ptitle[readonly] { cursor: default; }
+@media (prefers-reduced-motion: reduce) { .ph-ld { animation: none; } }

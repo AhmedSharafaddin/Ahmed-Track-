@@ -172,6 +172,8 @@ export const todayLoad = () => M('todayLoad', () => {
 
 /* ───────── القوائم الذكية ───────── */
 export const SMART = {
+  // داخل ITrack: ما أسنده المدير أو فرضه التوصيف — قائمة واحدة يعرف منها الموظف التزاماته
+  ...(globalThis.CC_BACKEND ? { work: { name: 'من العمل', icon: 'people', filter: (t) => !!t.asg } } : {}),
   important: { name: 'هام', icon: 'star', filter: (t) => !!t.important },
   planned: { name: 'مخطط', icon: 'cal', filter: (t) => !!t.due },
   assigned: { name: 'المُسندة', icon: 'people', filter: (t) => !!t.assignee },
@@ -208,9 +210,13 @@ export function createTask(fields) {
   });
 }
 
+// المهمة المسندة أو الواجب: ما حدده المدير (أو التوصيف) لا يُعدَّل من هنا. الخادم يفرض ذلك أيضًا.
+export const LOCKED = ['title', 'due', 'time', 'important', 'urgent', 'repeat', 'est', 'shared', 'assignee', 'assignedAt', 'followUp'];
+export const isLocked = (t) => !!t?.asg;
 export function updateTask(id, patch) {
   const t = taskById(id);
   if (!t) return null;
+  if (t.asg) { patch = { ...patch }; for (const k of LOCKED) delete patch[k]; if (!Object.keys(patch).length) return t; }
   if ('assignee' in patch) {
     const a = (patch.assignee || '').trim() || null;
     patch.assignee = a;

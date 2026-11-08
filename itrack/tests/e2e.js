@@ -47,7 +47,7 @@ async function join(p, email, pass = 'Passw0rd!') {
   await gm.fill('[data-form=org] [name=name]', 'إدارة الخدمات اللوجستية'); await gm.fill('[data-form=org] [name=my_name]', 'أحمد');
   await gm.click('[data-form=org] button'); await gm.waitForSelector('.tabs'); await wait(gm, 500);
   ok('lands on structure/departments', gm.url().endsWith('#/org/departments'), gm.url());
-  ok('sidebar shows admin nav', (await gm.$$eval('#nav a', (a) => a.map((x) => x.textContent))).join() === 'يومي,مهامي,الفريق,الهيكل,السجل,الإعدادات');
+  ok('sidebar shows admin nav', (await gm.$$eval('#nav a', (a) => a.map((x) => x.textContent))).join() === 'يومي,مهامي,المتابعة,الهيكل,السجل,الإعدادات');
   await gm.fill('[data-form=dep][data-id=""] [name=name]', 'اللوجستيات'); await gm.click('[data-form=dep][data-id=""] button'); await wait(gm, 500);
   ok('department added', (await gm.$$('.person')).length === 1);
   await gm.click('.tabs a[href="#/org/positions"]'); await wait(gm);
@@ -81,7 +81,7 @@ async function join(p, email, pass = 'Passw0rd!') {
   // ٢) الموظفة: انضمام، تقرير، حفظ تلقائي، رفع
   const emp = await page(b, { width: 390, height: 844 });
   await join(emp, 'sara@org.test'); await emp.waitForSelector('#new-item');
-  ok('employee lands on day, no team nav', !(await emp.$$eval('.tabbar a', (a) => a.map((x) => x.textContent))).includes('الفريق'));
+  ok('employee lands on day, no team nav', !(await emp.$$eval('.tabbar a', (a) => a.map((x) => x.textContent))).includes('المتابعة'));
   ok('employee sees her JD', (await emp.$$('.jd li')).length === 3);
   const add = async (t, resp, m) => { await emp.fill('#new-item', t); if (resp) await emp.selectOption('[data-form=add-item] [name=responsibility_id]', { label: resp }); if (m) await emp.selectOption('[data-form=add-item] [name=minutes]', String(m)); await emp.press('#new-item', 'Enter'); await wait(emp, 250); };
   await add('استلمت شحنة المورد وطابقتها مع الفاتورة', 'استلام الشحنات ومطابقتها مع الفواتير', 60);
@@ -103,11 +103,13 @@ async function join(p, email, pass = 'Passw0rd!') {
   // ٣) المشرف: يرى، يعيد للتعديل
   const sup = await page(b, { width: 1366, height: 900 }, 'navy');
   await join(sup, 'sup@org.test'); await sup.waitForSelector('.kpis');
-  ok('supervisor lands on team', sup.url().includes('#/team'));
+  ok('supervisor lands on follow-up board', sup.url().includes('#/track'));
+  ok('follow-up board shows queue with the submitted report', (await text(sup, '.queue')).includes('تقرير'));
+  await sup.goto(BASE + '#/team'); await sup.waitForSelector('.kpis .kpi b'); await wait(sup, 500);
   ok('kpi 1/1 submitted', (await text(sup, '.kpi b')).startsWith('1'));
   ok('row shows blocked tag', (await text(sup, '.card:not(.queue) .person')).includes('1 متعثّر'));
   ok('review queue lists the submitted report', (await sup.$$('.queue .person')).length === 1 && (await text(sup, '.queue')).includes('سارة'));
-  ok('team nav shows review badge', (await text(sup, '#nav a[href="#/team"] em')) === '1');
+  ok('team nav shows review badge', (await text(sup, '#nav a[href="#/track"] em')) === '1');
   await axe(sup, 'team (navy desk)');
   await sup.click('a.person'); await sup.waitForSelector('[data-form=review]');
   ok('member report readable', (await sup.$$('.items .item')).length === 3 && (await text(sup, '.items')).includes('السبب'));

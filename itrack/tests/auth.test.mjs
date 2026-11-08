@@ -98,20 +98,28 @@ r = await call(null, 'POST', '/api/auth/login', { email: 'emp@co.test', password
 const emp4 = r.data.token;
 ok('invite mode: employee cannot create org', (await call(emp4, 'POST', '/api/orgs', { name: 'x', my_name: 'y' })).status === 403);
 
-/* ───── الذكاء الاصطناعي ───── */
+/* ───── الذكاء الاصطناعي: طبقتان — الخادم (ربط المزوّد) والجهة (مفتاح المسؤول، معطّل افتراضيًا) ───── */
 const wav = Buffer.from('RIFF....WAVEfmt fake audio').toString('base64');
-r = await call(emp4, 'POST', '/api/ai/voice?ctx=' + encodeURIComponent(JSON.stringify({ today: '2026-11-07', areas: ['العمل'] })), wav, null, true);
-ok('ai voice: transcribe + parse (no org header needed)', r.status === 200 && r.data.text.includes('المورد') && r.data.items[0].time === '10:00' && r.data.items[0].area === 'العمل', r.data);
+const voicePath = '/api/ai/voice?ctx=' + encodeURIComponent(JSON.stringify({ today: '2026-11-07', areas: ['العمل'] }));
+ok('ai: off by default per org (IT decides)', (await call(emp4, 'POST', '/api/ai/parse', { text: 'x' }, ORG)).data.error === 'feature-off');
+ok('ai: org required (switch cannot be bypassed)', (await call(emp4, 'POST', '/api/ai/parse', { text: 'x' })).data.error === 'no-org');
+ok('ai: only admin enables', (await call(emp4, 'PUT', '/api/settings', { feat: { ai: true } }, ORG)).status === 403);
+ok('ai: admin enables', (await call(boss, 'PUT', '/api/settings', { feat: { ai: true } }, ORG)).data.feat?.ai === true);
+r = await call(emp4, 'POST', voicePath, wav, ORG, true);
+ok('ai voice: transcribe + parse', r.status === 200 && r.data.text.includes('المورد') && r.data.items[0].time === '10:00' && r.data.items[0].area === 'العمل', r.data);
 ok('ai: calls go to configured provider', aiCalls.some((u) => u.endsWith('/audio/transcriptions')) && aiCalls.some((u) => u.endsWith('/chat/completions')));
-r = await call(emp4, 'POST', '/api/ai/parse', { text: 'اتصل بالمورد بكرة', today: '2026-11-07', areas: ['العمل'] });
+r = await call(emp4, 'POST', '/api/ai/parse', { text: 'اتصل بالمورد بكرة', today: '2026-11-07', areas: ['العمل'] }, ORG);
 ok('ai parse', r.data.items?.[0]?.title === 'الاتصال بالمورد', r.data);
-r = await call(emp4, 'POST', '/api/ai/minutes', { text: 'اجتماع قصير ناقشنا فيه تأجيل الشحنة وسالم يراسل المورد', people: ['سالم'] });
+r = await call(emp4, 'POST', '/api/ai/minutes', { text: 'اجتماع قصير ناقشنا فيه تأجيل الشحنة وسالم يراسل المورد', people: ['سالم'] }, ORG);
 ok('ai minutes', r.data.decisions?.[0] === 'تأجيل الشحنة' && r.data.actions?.[0]?.owner === 'سالم', r.data);
-ok('ai: bad audio rejected', (await call(emp4, 'POST', '/api/ai/transcribe', '!!!not base64', null, true)).status === 400);
-ok('ai: requires login', (await call(null, 'POST', '/api/ai/parse', { text: 'x' })).status === 401);
+ok('ai: bad audio rejected', (await call(emp4, 'POST', '/api/ai/transcribe', '!!!not base64', ORG, true)).status === 400);
+ok('ai: requires login', (await call(null, 'POST', '/api/ai/parse', { text: 'x' }, ORG)).status === 401);
 ok('ai: nothing stored', (await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE data LIKE '%المورد%'").first()).n === 0);
-for (let i = 0; i < 25; i++) await call(emp4, 'POST', '/api/ai/minutes', { text: 'نص اجتماع طويل بما يكفي للاختبار' });
-ok('ai: daily limit enforced', (await call(emp4, 'POST', '/api/ai/minutes', { text: 'نص اجتماع طويل بما يكفي للاختبار' })).status === 429);
+ok('ai: enabling is audited', (await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'settings.update'").first()).n === 1);
+for (let i = 0; i < 25; i++) await call(emp4, 'POST', '/api/ai/minutes', { text: 'نص اجتماع طويل بما يكفي للاختبار' }, ORG);
+ok('ai: daily limit enforced', (await call(emp4, 'POST', '/api/ai/minutes', { text: 'نص اجتماع طويل بما يكفي للاختبار' }, ORG)).status === 429);
+await call(boss, 'PUT', '/api/settings', { feat: { ai: false } }, ORG);
+ok('ai: admin switches off → refused immediately', (await call(emp4, 'POST', voicePath, wav, ORG, true)).data.error === 'feature-off');
 
 /* ───── الوضع المفتوح (Cloudflare/تجربة) ───── */
 const env2 = { DB: makeD1(), PBKDF2_ITERS: '10000' };
@@ -130,7 +138,7 @@ r = await c2(null, 'POST', '/api/auth/code', { email: 'b@x.test', code: bCode, p
 ok('code: existing account must prove password', r.data.error === 'bad-login', r.data);
 r = await c2(null, 'POST', '/api/auth/code', { email: 'b@x.test', code: bCode, password: 'pass-bbbb-1' });
 ok('code: existing account joins with its password', r.status === 200 && r.data.org === ORG2, r.data);
-ok('open mode: ai disabled → 501', (await c2(b, 'POST', '/api/ai/parse', { text: 'x' })).status === 501);
+ok('open mode: ai disabled → 501', (await c2(b, 'POST', '/api/ai/parse', { text: 'x' }, ORG2)).status === 501);
 // حماية بين الجهات: مسؤول جهة أخرى لا يعيد كلمة مرور عضو مشترك
 const c = (await c2(null, 'POST', '/api/auth/signup', { email: 'c@x.test', password: 'pass-cccc-1' })).data.token;
 const ORG3 = (await c2(c, 'POST', '/api/orgs', { name: 'C', my_name: 'C' })).data.id;
