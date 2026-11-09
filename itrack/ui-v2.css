@@ -233,6 +233,9 @@ html[data-ui="v2"] .person.rowx .pmain .who b { overflow-wrap: anywhere; }
 html[data-ui="v2"] .person.rowx .pmain .nums { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-2); align-items: center; font-size: var(--fs-xs); color: var(--muted); }
 html[data-ui="v2"] .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-4); }
 html[data-ui="v2"] .filters .seg { margin-inline-start: auto; }
+html[data-ui="v2"] select.in { max-width: 100%; min-width: 0; text-overflow: ellipsis; }
+html[data-ui="v2"] .filters select.in { flex: 1 1 180px; max-width: 300px; }
+html[data-ui="v2"] .filters input.in { flex: 1 1 180px; }
 html[data-ui="v2"] .hrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-4); }
 html[data-ui="v2"] .person.rowx .pst { padding-inline: var(--s-2); }
 html[data-ui="v2"] .person.rowx .pacts { display: flex; gap: var(--s-2); align-items: center; padding: var(--s-2) var(--s-4) var(--s-2) var(--s-3); }
@@ -353,6 +356,10 @@ html[data-scheme="dark"][data-ui="v2"] .cc.off { opacity: .35; }
 }
 
 /* ═════════ ١٤) نصوص ≥١٣px: كل قاعدة في styles.css كان حجمها أقل (مولَّدة آليًا، يتحقق منها tests/ui.e2e.js) ═════════ */
+html[data-ui="v2"] kbd,
+html[data-ui="v2"] small,
+html[data-ui="v2"] .tbl small,
+html[data-ui="v2"] .tbl [data-l] small,
 html[data-ui="v2"] .brand small,
 html[data-ui="v2"] .nav a em,
 html[data-ui="v2"] .tabbar a,
