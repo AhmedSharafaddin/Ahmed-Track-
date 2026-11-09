@@ -55,6 +55,7 @@ const verdict = (p) => p.evaluate(() => ({
 
   // مهمة مسندة بحمولات + تعليق + مهام شخصية + هدف + مجال
   const as = await api(M.token, 'POST', '/api/assign', { to: [ei.id], title: ALL, desc: ALL, due: T, prio: 3 }, ORG);
+  await api(M.token, 'POST', '/api/remind', { members: [ei.id] }, ORG); // نص التذكير يحمل اسم المدير (حمولة) ويُعرض عند الموظف
   const tid = as.ids?.[0]?.id; // العنوان يُقصّ في الخادم، فنأخذ المعرّف من ردّ الإسناد
   ok('setup: assigned task with payload title exists', !!tid, as);
   await api(E.token, 'POST', `/api/task/me/${tid}/comments`, { body: ALL }, ORG);
@@ -72,7 +73,7 @@ const verdict = (p) => p.evaluate(() => ({
     await c.evaluate((h) => { document.body.insertAdjacentHTML('beforeend', h); }, P1 + P2);
     await c.waitForTimeout(400); const cv = await verdict(c);
     ok('عنصر الضبط: الكاشف يلتقط حقنًا متعمدًا (وإلا الاختبار أعمى)', cv.x > 0 && cv.img > 0, cv); }
-  const itRoutes = ['#/day', '#/team', '#/track', '#/track/tasks', '#/track/board', '#/track/new', '#/track/ops', '#/org', '#/org/members', '#/org/departments', '#/audit', '#/settings'];
+  const itRoutes = ['#/day', '#/team', '#/track/today', '#/track', '#/track/tasks', '#/track/board', '#/track/new', '#/track/ops', '#/org', '#/org/members', '#/org/departments', '#/audit', '#/settings'];
   const myRoutes = ['#/today', '#/list/work', '#/dashboard', '#/all', '#/all/late', '#/matrix', '#/goals', '#/settings', '#/review', '#/week', '#/upcoming', '#/inbox'];
   const roles = [['المسؤول', G, true], ['المدير', M, true], ['الموظف', E, true]];
   for (const [label, ses, my] of roles) {

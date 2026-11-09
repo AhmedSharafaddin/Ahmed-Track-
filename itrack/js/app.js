@@ -158,7 +158,7 @@ function paintNav() {
   const cur = (k) => (k === r || (k === 'track' && ['team', 'm'].includes(r)) ? ' aria-current="page"' : '');
   const rc = hasTeam() ? reviewCount() : 0; const un = unreadCount();
   const badge = (k) => (k === 'track' && rc ? `<em aria-label="${n(rc)} بانتظار قرارك">${n(rc)}</em>` : k === 'day' && un ? `<em aria-label="${n(un)} تنبيه جديد">${n(un)}</em>` : '');
-  const nav = items.map(([k, h, ic, l]) => `<a href="${h}"${cur(k)}>${I(ic, ['day', 'track', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span>${badge(k)}</a>`).join('');
+  const nav = items.map(([k, h, ic, l]) => `<a href="${h}" title="${l}"${cur(k)}>${I(ic, ['day', 'track', 'settings'].includes(k) ? 'd' : 'i')}<span>${l}</span>${badge(k)}</a>`).join('');
   const navEl = $('#nav'); if (navEl.innerHTML !== nav) navEl.innerHTML = nav;
   const tb = $('.tabbar'); if (tb.innerHTML !== nav) tb.innerHTML = nav;
   const org = `<b>${esc(S.boot.org.name)}</b><span>${esc(S.boot.me.name)} · ${ROLE[myRole()]}</span>`;

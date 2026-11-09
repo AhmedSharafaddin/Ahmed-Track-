@@ -104,9 +104,9 @@ function vBoard() {
   // قرارك: ما ينتظر اعتمادك (مهام وتقارير)
   const queue = ib && !ib.error ? [
     ...(ib.team?.pending || []).map((x) => ({ h: ref(x), m: who(x.member_id), t: x.title, s: 'مهمة منجزة', at: x.doneAt })),
-    ...ib.review.map((x) => ({ h: `#/m/${encodeURIComponent(x.member_id)}/${x.date}`, m: who(x.member_id), t: `تقرير ${H.rel(x.date)}`, s: 'تقرير يومي', at: x.submitted_at })),
+    ...ib.review.map((x) => ({ h: `#/m/${encodeURIComponent(x.member_id)}/${x.date}`, m: who(x.member_id), t: `تقرير ${H.rel(x.date)}`, s: 'تقرير يومي', at: x.submitted_at, rep: true })),
   ].filter((x) => x.m).sort((a2, b2) => (a2.at || 0) - (b2.at || 0)) : [];
-  const qCard = queue.length ? `<div class="card queue"><h2>${H.I('hourglass')}بانتظار قرارك · ${H.n(queue.length)}</h2><div class="people">${queue.slice(0, 6).map((x) => `<a class="person" href="${x.h}">${H.avatar(x.m.name)}<div class="who"><b>${H.esc(x.t)}</b><small>${H.esc(x.m.name)} · ${x.s}</small></div>${H.I('fwd')}</a>`).join('')}</div></div>` : '';
+  const qCard = queue.length ? `<div class="card queue"><h2>${H.I('hourglass')}بانتظار قرارك · ${H.n(queue.length)}</h2><div class="people">${queue.slice(0, 6).map((x) => `<a class="person" href="${x.h}">${H.avatar(x.m.name)}<div class="who"><b>${H.esc(x.rep && H.isV2() ? x.m.name : x.t)}</b><small>${x.rep && H.isV2() ? H.esc(x.t) : `${H.esc(x.m.name)} · ${x.s}`}</small></div>${H.I('fwd')}</a>`).join('')}</div></div>` : '';
   // الإدارات
   const deps = H.S.boot.departments.filter((d) => d.active).map((d) => {
     const xs = M.members.filter((x) => who(x.member_id)?.department_id === d.id); if (!xs.length) return null;
