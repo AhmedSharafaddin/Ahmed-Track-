@@ -462,3 +462,10 @@ a.kpi:hover { transform: translateY(-2px); }
 .pmem .progline { margin: 0; flex-wrap: nowrap; } .pmem .progline .meter { flex: 1; width: auto; min-width: 40px; }
 .pmem small { grid-column: 1 / -1; color: var(--muted); } .pmem small .hot { color: var(--bad); font-weight: 600; }
 .pform { margin-bottom: 14px; }
+
+/* استيراد التوصيف من ملف */
+.imp { display: grid; gap: 8px; padding: 12px; margin-bottom: 12px; border-radius: 12px; border: 1px dashed var(--line); background: var(--surface-2); }
+.imp > b { display: flex; gap: 6px; align-items: center; } .imp .hint { margin: 0; }
+.imp input[type=file] { padding: 8px; font-size: .88rem; }
+.imp-paste summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 4px 0; } .imp-paste textarea { margin: 6px 0; }
+.imp-out { margin: 0; font-size: .88rem; line-height: 1.7; } .imp-out:empty { display: none; }

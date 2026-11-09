@@ -555,21 +555,46 @@ function orgMembers() {
       <p class="hint" style="margin-top:12px">بعد الإضافة تظهر رسالة دعوة فيها رابط ورمز. يفتحها ويختار كلمة مرور فيُربط بمكانه تلقائيًا.</p></div>
       <div class="card"><h2>${I('doc')}الأدوار</h2><ul class="hint" style="margin:0;padding-inline-start:18px;display:grid;gap:4px"><li><b>مسؤول الجهة</b>: يرى الجميع ويدير الهيكل والسجل.</li><li><b>مدير</b>: يرى من يتبعونه على أي عمق، يعتمد ويعيد.</li><li><b>موظف</b>: يرى تقاريره وتوصيفه فقط.</li></ul></div></div></div>`;
 }
+const respRow = (r, i) => `<div class="resp-row"><input type="hidden" name="rid" value="${esc(r?.id || '')}" />
+  <input class="in" name="rt" maxlength="160" value="${esc(r?.title || '')}" placeholder="المسؤولية (مثال: استلام الشحنات ومطابقتها)" aria-label="المسؤولية ${n(i + 1)}" />
+  <textarea class="in auto" name="rd" rows="1" maxlength="800" placeholder="التفاصيل أو معيار الإنجاز (اختياري)" aria-label="تفاصيل المسؤولية ${n(i + 1)}">${esc(r?.detail || '')}</textarea>
+  <div class="duty"><select class="in" name="rf" aria-label="تكرار المسؤولية ${n(i + 1)}">${Object.entries(TR.FREQ).map(([k, l]) => `<option value="${k}"${(r?.freq || '') === k ? ' selected' : ''}>${k ? `واجب ${l}` : l}</option>`).join('')}</select>
+    <select class="in" name="rp" aria-label="الأولوية">${[1, 2, 3].map((p) => `<option value="${p}"${(r?.prio || 1) === p ? ' selected' : ''}>${TR.PR[p]}</option>`).join('')}</select>
+    <select class="in" name="re" aria-label="الوقت المتوقع"><option value="">المدة</option>${[...new Set([15, 30, 45, 60, 90, 120, 180, 240, ...(r?.est ? [r.est] : [])])].sort((x, y) => x - y).map((m) => `<option value="${m}"${r?.est === m ? ' selected' : ''}>${mins(m)}</option>`).join('')}</select></div>
+  <div class="acts"><button type="button" class="ib" data-act="resp-up" aria-label="أعلى">${I('down')}</button><button type="button" class="ib" data-act="resp-del" aria-label="حذف">${I('trash')}</button></div></div>`;
+/** استيراد التوصيف من ملف أو نص: يملأ صفوف المسؤوليات في النموذج للمراجعة، ولا يحفظ شيئًا. */
+async function importInto(form, src) {
+  const out = form.querySelector('[data-imp-out]'); out.textContent = 'يقرأ الملف…';
+  try {
+    const M = await import('./import.js');
+    const r = M.extract(typeof src === 'string' ? M.fromText(src) : await M.readSource(src));
+    if (!r.duties.length) { out.textContent = 'لم أجد واجبات في هذا الملف. جرّب لصق النص، أو رتّب الجدول بأعمدة: المهمة، التكرار، الأولوية، المدة.'; return; }
+    const box = form.querySelector('.resp-rows');
+    box.querySelectorAll('.resp-row').forEach((row) => { if (!row.querySelector('[name=rt]').value.trim()) row.remove(); });
+    const room = Math.max(0, 40 - box.querySelectorAll('.resp-row').length); const add = r.duties.slice(0, room);
+    box.insertAdjacentHTML('beforeend', add.map((d, i) => respRow({ ...d, active: 1 }, box.children.length + i)).join(''));
+    box.querySelectorAll('textarea.auto').forEach(autosize);
+    if (r.title && !form.elements.title.value.trim()) form.elements.title.value = r.title;
+    if (r.summary && !form.elements.summary.value.trim()) { form.elements.summary.value = r.summary; autosize(form.elements.summary); }
+    const cnt = (f) => add.filter((d) => d.freq === f).length; const none = add.filter((d) => !d.freq).length;
+    out.textContent = `أُضيف ${n(add.length)} بندًا (${n(cnt('daily'))} يومي، ${n(cnt('weekly'))} أسبوعي، ${n(cnt('monthly'))} شهري، ${n(none)} بلا تكرار). راجعها ثم احفظ. البنود الدورية فقط تظهر تلقائيًا في مهام من يشغل الوظيفة.${r.notes.length ? ` ${r.notes.join(' ')}` : ''}${add.length < r.duties.length ? ' بلغت الوظيفة حدّها (٤٠) فلم تُضف بقية البنود.' : ''}`;
+    toast('استُخرجت المسؤوليات. راجعها ثم احفظ.');
+  } catch (e) { out.textContent = e?.message || 'تعذّرت قراءة الملف.'; }
+}
 function posEditor(p) {
   const deps = S.boot.departments.filter((x) => x.active || x.id === p?.department_id);
   const rs = (p?.responsibilities || []).filter((r) => r.active);
-  const rrow = (r, i) => `<div class="resp-row"><input type="hidden" name="rid" value="${esc(r?.id || '')}" />
-      <input class="in" name="rt" maxlength="160" value="${esc(r?.title || '')}" placeholder="المسؤولية (مثال: استلام الشحنات ومطابقتها)" aria-label="المسؤولية ${n(i + 1)}" />
-      <textarea class="in auto" name="rd" rows="1" maxlength="800" placeholder="التفاصيل أو معيار الإنجاز (اختياري)" aria-label="تفاصيل المسؤولية ${n(i + 1)}">${esc(r?.detail || '')}</textarea>
-      <div class="duty"><select class="in" name="rf" aria-label="تكرار المسؤولية ${n(i + 1)}">${Object.entries(TR.FREQ).map(([k, l]) => `<option value="${k}"${(r?.freq || '') === k ? ' selected' : ''}>${k ? `واجب ${l}` : l}</option>`).join('')}</select>
-        <select class="in" name="rp" aria-label="الأولوية">${[1, 2, 3].map((p) => `<option value="${p}"${(r?.prio || 1) === p ? ' selected' : ''}>${TR.PR[p]}</option>`).join('')}</select>
-        <select class="in" name="re" aria-label="الوقت المتوقع"><option value="">المدة</option>${[15, 30, 45, 60, 90, 120, 180, 240].map((m) => `<option value="${m}"${r?.est === m ? ' selected' : ''}>${mins(m)}</option>`).join('')}</select></div>
-      <div class="acts"><button type="button" class="ib" data-act="resp-up" aria-label="أعلى">${I('down')}</button><button type="button" class="ib" data-act="resp-del" aria-label="حذف">${I('trash')}</button></div></div>`;
+  const rrow = respRow;
   return `<form class="form-grid" data-form="position" data-id="${esc(p?.id || '')}">
     <div class="form-grid two"><label class="fld"><span>المسمّى الوظيفي</span><input class="in" name="title" required maxlength="100" value="${esc(p?.title || '')}" /></label>
     <label class="fld"><span>الإدارة</span><select class="in" name="department_id"><option value="">—</option>${deps.map((x) => opt(x.id, x.name, p?.department_id)).join('')}</select></label></div>
     <label class="fld"><span>الغرض من الوظيفة</span><textarea class="in auto" name="summary" rows="2" maxlength="1000">${esc(p?.summary || '')}</textarea></label>
     <div><p class="hint" style="margin-bottom:8px">المسؤوليات: كل بند يكتبه الموظف يُربط بواحدة منها. اجعل المسؤولية «واجبًا يوميًا أو أسبوعيًا أو شهريًا» فتظهر تلقائيًا في مهام كل من يشغل الوظيفة، وتُحسب في مؤشراته. حذف مسؤولية يعطّلها فقط.</p>
+    <div class="imp"><b>${I('doc')}استيراد من ملف</b>
+      <p class="hint">ارفع التوصيف الوظيفي (Excel أو Word أو PDF أو CSV) فتتحوّل بنوده إلى مسؤوليات تراجعها هنا قبل الحفظ. يُقرأ الملف في جهازك ولا يُرفع لأي خادم. ما لا يُعرف (التكرار والمدة) يبقى فارغًا.</p>
+      <label class="fld"><span>الملف (xlsx · docx · pdf · csv · txt)</span><input id="imp-file" class="in" type="file" data-imp-file accept=".xlsx,.xlsm,.csv,.tsv,.docx,.pdf,.txt,application/pdf" /></label>
+      <details class="imp-paste"><summary>أو الصق النص هنا</summary><textarea class="in auto" rows="4" data-imp-text aria-label="نص التوصيف الوظيفي" placeholder="الصق قائمة المهام: سطر لكل بند. عناوين مثل «المهام اليومية» تحدد التكرار لما تحتها."></textarea><button type="button" class="btn sm" data-act="imp-text">حوّل إلى مسؤوليات</button></details>
+      <p class="imp-out" data-imp-out role="status" aria-live="polite"></p></div>
     <div class="resp-rows">${(rs.length ? rs : [null, null, null]).map(rrow).join('')}</div>
     <button type="button" class="btn sm" data-act="resp-add" style="margin-top:8px">${I('plus')}مسؤولية</button></div>
     <div class="row"><button class="btn primary" type="submit">حفظ${p ? ` (الإصدار ${n(p.version + 1)} إن تغيّر شيء)` : ''}</button><button type="button" class="btn" data-act="edit-pos" data-id="">إلغاء</button></div>
@@ -697,6 +722,7 @@ document.addEventListener('click', async (e) => {
     case 'resp-del': el.closest('.resp-row').remove(); break;
     case 'resp-up': { const row = el.closest('.resp-row'); if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); break; }
     case 'edit-dep': S.edit.dep = el.dataset.id || null; render(); break;
+    case 'imp-text': { const f = el.closest('form'); const t = f.querySelector('[data-imp-text]').value; if (t.trim()) importInto(f, t); break; }
     case 'edit-sec': S.edit.sec = el.dataset.id || null; render(); break;
     case 'toggle-sec': { const x = secById(el.dataset.id); if (x) mutate(() => call('PATCH', `/api/sections/${x.id}`, { active: !x.active }), 'حُفظ.'); break; }
     case 'toggle-dep': { const x = depById(el.dataset.id); if (x) mutate(() => call('PATCH', `/api/departments/${x.id}`, { active: !x.active }), 'حُفظ.'); break; }
@@ -706,6 +732,7 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
+  if (el.dataset.impFile !== undefined) { const f = el.files?.[0]; el.value = ''; if (f) importInto(el.closest('form'), f); return; }
   if (TR.input(el)) return;
   if (el.dataset.act === 'fdep') { S.f.dep = el.value; render(); return; }
   if (el.dataset.edit && el.tagName === 'SELECT') {
