@@ -65,9 +65,9 @@ if (process.argv[2] === 'backup') {
 }
 
 /* ───── الملفات الثابتة ───── */
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
 // ما يُسمح بخدمته فقط (لا مجلد tests ولا worker ولا server ولا ملفات المستودع الأخرى)
-const ALLOW = [/^\/itrack\/(index\.html|styles\.css|config\.js|sw\.js|manifest\.webmanifest)$/, /^\/itrack\/(js|icons|fonts)\/[\w.-]+$/, /^\/itrack\/my\/index\.html$/,
+const ALLOW = [/^\/itrack\/(index\.html|styles\.css|config\.js|sw\.js|manifest\.webmanifest)$/, /^\/itrack\/(js|icons|fonts)\/[\w.-]+$/, /^\/itrack\/templates\/jd-template\.xlsx$/, /^\/itrack\/my\/index\.html$/,
   /^\/js\/[\w.-]+\.js$/, /^\/(fonts|icons)\/[\w.-]+$/, /^\/styles\.css$/];
 const NO_CACHE = /\.(html|webmanifest)$|\/sw\.js$|\/config\.js$/;
 const files = new Map(); // كاش في الذاكرة: المحتوى + الضغط + ETag، يُحدَّث إن تغيّر الملف

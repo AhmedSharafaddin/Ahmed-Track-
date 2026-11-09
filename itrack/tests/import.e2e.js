@@ -31,7 +31,7 @@ const FREQ = ['daily', 'daily', 'weekly', 'weekly', 'monthly'];
   p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errs.push(m.text()); });
   p.on('response', (r) => { if (r.url().includes('/api/') && r.status() >= 500) errs.push('API ' + r.status()); });
   const open = async () => { await p.goto(BASE + '#/org/positions'); await p.reload(); await p.waitForSelector('[data-imp-file], [data-act=edit-pos][data-id=new]', { timeout: 8000 }); const bt = await p.$('[data-act=edit-pos][data-id=new]'); if (bt) await bt.click(); await p.waitForSelector('[data-imp-file]'); };
-  const upload = async (f, wait = 1800) => { const el = await p.$('[data-imp-file]'); await el.setInputFiles(typeof f === 'string' ? FX(f) : f); await p.waitForFunction(() => { const o = document.querySelector('[data-imp-out]'); return o && o.textContent && !/يقرأ/.test(o.textContent); }, null, { timeout: 15000 }); };
+  const upload = async (f, wait = 1800) => { const el = await p.$('[data-imp-file]'); await el.setInputFiles(typeof f === 'string' ? (path.isAbsolute(f) ? f : FX(f)) : f); await p.waitForFunction(() => { const o = document.querySelector('[data-imp-out]'); return o && o.textContent && !/يقرأ/.test(o.textContent); }, null, { timeout: 15000 }); };
   const check = (name, rows, o = {}) => {
     ok(`${name}: ٥ واجبات بعناوينها`, rows.length === 5 && TITLES.every((t, i) => rows[i].t === t), rows.map((r) => r.t));
     ok(`${name}: التكرار صحيح`, FREQ.every((f, i) => rows[i].f === f), rows.map((r) => r.f));
@@ -48,6 +48,21 @@ const FREQ = ['daily', 'daily', 'weekly', 'weekly', 'monthly'];
   ok('xlsx: التفاصيل من عمودها', rows[0].d === 'مطابقة الكميات والأصناف' && rows[4].d.includes('اليوم الخامس'), rows.map((r) => r.d));
   ok('xlsx: المسمى الوظيفي المقروء من الملف في الحقل', (await p.inputValue('[data-form=position] [name=title]')).includes('أمين مستودع'));
   ok('ملخص الاستيراد يذكر العدد والتكرار ويطلب المراجعة', /5 بندًا|٥ بندًا/.test(await p.textContent('[data-imp-out]')) && (await p.textContent('[data-imp-out]')).includes('راجعها'), await p.textContent('[data-imp-out]'));
+  // ١ب) النموذج الرسمي: الفارغ لا يستورد شيئًا (لا ترقيم ولا تسمية عمود كعنوان)، والمعبَّأ يُقرأ بكل خاناته، وورقتا المثال والتعليمات لا تُستوردان
+  const TPL = path.join(__dirname, '..', 'templates', 'jd-template.xlsx');
+  await open(); await upload(TPL); rows = await rowsOf(p);
+  const blankOut = await p.textContent('[data-imp-out]');
+  ok('النموذج الفارغ: لا واجبات ولا عنوان/غرض مستورد من الملصقات', rows.length === 0 && (await p.inputValue('[data-form=position] [name=title]')) === '' && (await p.inputValue('[data-form=position] [name=summary]')) === '', [rows.length, blankOut]);
+  ok('النموذج الفارغ: رسالة واضحة (لا انهيار)', /لم أجد/.test(blankOut), blankOut);
+  await open(); await upload(FX('jd-template-filled.xlsx')); rows = await rowsOf(p);
+  check('النموذج المعبَّأ', rows, { prio: [3, 2, 2, 1, 3], est: [30, 45, 60, 90, 120] });
+  ok('النموذج المعبَّأ: معيار الإنجاز في التفاصيل', rows[0].d === 'مطابقة الكميات والأصناف' && rows[4].d.includes('اليوم الخامس'), rows.map((r) => r.d));
+  ok('النموذج المعبَّأ: لا بنود من ورقة «مثال» (٥ فقط) ولا من «تعليمات»', rows.length === 5 && !rows.some((r) => /\[مثال|معيار|تعليمات/.test(r.t)), rows.map((r) => r.t));
+  ok('النموذج المعبَّأ: المسمى والغرض', (await p.inputValue('[data-form=position] [name=title]')) === 'أمين مستودع' && (await p.inputValue('[data-form=position] [name=summary]')).includes('دقة المخزون'));
+  ok('النموذج المعبَّأ: الإدارة «المخازن» طابقت «إدارة المخازن» تلقائيًا', (await p.inputValue('[data-form=position] [name=department_id]')) === dep, await p.inputValue('[data-form=position] [name=department_id]'));
+  // رابط التنزيل يخدم الملف نفسه بنوعه الصحيح
+  const dl = await p.$eval('.imp a[download]', (a) => a.href); const rr = await fetch(dl);
+  ok('رابط تنزيل النموذج يعمل ويطابق الملف', rr.ok && Buffer.from(await rr.arrayBuffer()).equals(fs.readFileSync(TPL)), [rr.status, dl]);
   // ٢) docx نصي بعناوين التكرار + يستبعد المؤهلات
   await open(); await upload('jd.docx'); rows = await rowsOf(p); check('docx (نص بنقاط وعناوين)', rows);
   ok('docx: المؤهلات مستبعدة', !rows.some((r) => /بكالوريوس|خبرة/.test(r.t)));

@@ -61,19 +61,20 @@ const xml = (s) => { const d = new DOMParser().parseFromString(s, 'application/x
 const ln = (el) => el.localName || el.nodeName.split(':').pop();
 const kids = (el, name) => [...el.children].filter((c) => ln(c) === name);
 
+const SKIP_SHEET = /^(مثال|امثله|أمثلة|تعليمات|ارشادات|إرشادات|example|sample|instruction|readme|help)/i;
 async function readXlsx(buf) {
   const z = await openZip(buf);
   if (!z.has('xl/workbook.xml')) throw new Error('ليس ملف Excel بصيغة xlsx. إن كان xls قديمًا فاحفظه من Excel كـ xlsx أو CSV.');
   const wb = xml(await z.text('xl/workbook.xml'));
   const rels = z.has('xl/_rels/workbook.xml.rels') ? xml(await z.text('xl/_rels/workbook.xml.rels')) : null;
   const target = new Map(rels ? [...rels.getElementsByTagName('Relationship')].map((r) => [r.getAttribute('Id'), r.getAttribute('Target')]) : []);
-  const sheets = [...wb.getElementsByTagName('sheet')].map((s, i) => ({ state: s.getAttribute('state'), path: (() => { const t = target.get(s.getAttribute('r:id') || '') || `worksheets/sheet${i + 1}.xml`; return t.startsWith('/') ? t.slice(1) : `xl/${t.replace(/^\.\//, '')}`; })() }));
+  const sheets = [...wb.getElementsByTagName('sheet')].map((s, i) => ({ name: s.getAttribute('name') || '', state: s.getAttribute('state'), path: (() => { const t = target.get(s.getAttribute('r:id') || '') || `worksheets/sheet${i + 1}.xml`; return t.startsWith('/') ? t.slice(1) : `xl/${t.replace(/^\.\//, '')}`; })() }));
   const sst = [];
   if (z.has('xl/sharedStrings.xml')) for (const si of xml(await z.text('xl/sharedStrings.xml')).getElementsByTagName('si')) sst.push([...si.getElementsByTagName('t')].filter((t) => ln(t.parentNode) !== 'rPh').map((t) => t.textContent).join(''));
   const colIdx = (ref) => { let n = 0; for (const ch of (ref.match(/^[A-Z]+/i) || [''])[0].toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
   const tables = [];
   for (const sh of sheets) {
-    if (sh.state === 'hidden' || sh.state === 'veryHidden' || !z.has(sh.path)) continue;
+    if (sh.state === 'hidden' || sh.state === 'veryHidden' || !z.has(sh.path) || SKIP_SHEET.test(sh.name.trim())) continue; // أوراق المثال والتعليمات لا تُستورد
     const rows = [];
     for (const row of xml(await z.text(sh.path)).getElementsByTagName('row')) {
       const cells = []; let k = 0;
@@ -88,7 +89,7 @@ async function readXlsx(buf) {
     if (rows.some((r) => r.some(Boolean))) tables.push(rows);
   }
   if (!tables.length) throw new Error('لا بيانات في الملف.');
-  return { tables, lines: tables[0].map(rowLine).filter(Boolean), strict: false };
+  return { tables, lines: tables[0].map(rowLine).filter(Boolean), strict: false, ordered: true };
 }
 const rowLine = (r) => { const c = r.filter(Boolean); return c.length === 2 ? `${c[0]} : ${c[1]}` : c.join(' | '); };
 
@@ -228,18 +229,19 @@ function dutyFrom(o, notes) {
   return { title, detail: detail.slice(0, 800), freq, prio: o.prio || 1, est: o.est || null };
 }
 
-function fromTable(rows, strict, notes) {
+function fromTable(rows, strict, notes, loose = true) {
   let h = -1, cols = {}; const first = rows.findIndex((r) => r.some(Boolean));
   for (let i = 0; i < Math.min(rows.length, 12); i++) {
     const c = {}; rows[i].forEach((cell, j) => { const k = catOf(cell); if (k && !(k in c)) c[k] = j; });
     const uniq = Object.keys(c).length; if (uniq >= 2 || (!strict && uniq === 1 && c.title !== undefined && (rows[i].filter(Boolean).length >= 2 || i === first))) { h = i; cols = c; break; }
   }
   if (h < 0) {
-    if (strict) return [];
+    if (strict || !loose) return [];
     const w = rows[0]?.length || 0; if (w < 1) return [];
     return rows.filter((r) => (r[0] || '').length >= 4 && !(HEAD_DUTY.exec(norm(r[0]))?.index <= 3)).map((r) => dutyFrom({ title: r[0], detail: r.slice(1).filter(Boolean).join(' — ') }, notes));
   }
   if (cols.title === undefined) { if (cols.detail === undefined) return []; cols.title = cols.detail; delete cols.detail; }
+  notes.hdr = true; // وُجد جدول بعناوين معروفة: إن خلا من الصفوف فهو نموذج فارغ لا نص حر يُستخرج منه
   const hours = /ساع|hour/.test(norm(rows[h][cols.est] || ''));
   const out = []; let ctx = '';
   for (const r of rows.slice(h + 1)) {
@@ -283,22 +285,30 @@ function fromLines(lines, wrap, notes) {
   push(); return out;
 }
 
+const HEAD_DEP = /^(?:الاداره|اداره|القسم|الاداره والقسم)\s*[:：-]\s*(.*)$/;
 function metaOf(lines) {
-  let title = '', summary = '';
+  let title = '', summary = '', department = '';
+  const isLabel = (l) => { const n = norm(l); return /^(?:الاداره|اداره|القسم)$/.test(n) || HEAD_TITLE.test(n) || HEAD_DEP.test(n) || HEAD_SUM.test(n) || /[:：]/.test(l) || / \| /.test(l) || HEAD_DUTY.test(n) || HEAD_STOP.test(n); };
+  const val = (l) => l.replace(/^[^:：-]*[:：-]\s*/, '').trim();
   for (let i = 0; i < lines.length; i++) {
     const n = norm(lines[i]);
-    if (!title) { const m = n.match(HEAD_TITLE); if (m) { const raw = lines[i].replace(/^[^:：-]*[:：-]\s*/, '').trim(); title = (m[1] ? raw : lines[i + 1] || '').slice(0, 100); } }
-    if (!summary && HEAD_SUM.test(n) && n.split(' ').length <= 8) { const same = lines[i].split(/[:：]/).slice(1).join(':').trim(); const got = []; if (same) got.push(same); for (let j = i + 1; j < Math.min(i + 4, lines.length) && !/[:：]$/.test(lines[j]) && !HEAD_DUTY.test(norm(lines[j])); j++) got.push(lines[j]); summary = got.join(' ').slice(0, 1000); }
+    if (!title) { const m = n.match(HEAD_TITLE); if (m) { const v = /[:：-]/.test(lines[i]) ? val(lines[i]) : ''; title = (v || (!/[:：]\s*$/.test(lines[i]) && lines[i + 1] && !isLabel(lines[i + 1]) ? lines[i + 1] : '')).slice(0, 100); } }
+    if (!department) { const m = n.match(HEAD_DEP); if (m && m[1]) department = val(lines[i]).slice(0, 100); }
+    if (!summary && HEAD_SUM.test(n) && norm(lines[i].split(/[:：]/)[0]).split(' ').length <= 8) {
+      const same = lines[i].split(/[:：]/).slice(1).join(':').trim(); const got = []; if (same) got.push(same);
+      if (!same) for (let j = i + 1; j < Math.min(i + 4, lines.length) && !isLabel(lines[j]); j++) got.push(lines[j]);
+      summary = got.join(' ').slice(0, 1000);
+    }
   }
-  return { title: clean(title), summary: clean(summary) };
+  return { title: clean(title), summary: clean(summary), department: clean(department) };
 }
 
 /** من المصدر المقروء إلى { title, summary, duties[], notes[] }. */
 export function extract(src) {
   const nt = {}; let duties = [];
-  const order = [...(src.tables || [])].sort((a, b) => b.length - a.length);
-  for (const t of order) { duties = fromTable(t, !!src.strict, nt); if (duties.length) break; }
-  if (!duties.length) duties = fromLines(src.lines || [], src.wrap, nt);
+  const order = src.ordered ? [...(src.tables || [])] : [...(src.tables || [])].sort((a, b) => b.length - a.length); // xlsx: ترتيب الأوراق كما وضعه المستخدم
+  for (const [i, t] of order.entries()) { duties = fromTable(t, !!src.strict, nt, i === 0); if (duties.length) break; }
+  if (!duties.length && !(nt.hdr && !src.strict)) duties = fromLines(src.lines || [], src.wrap, nt);
   const seen = new Set(); duties = duties.filter((d) => { const k = norm(d.title); if (d.title.length < 3 || /^[\d\s.\-]+$/.test(d.title) || seen.has(k)) return false; seen.add(k); return true; });
   const notes = [];
   if (duties.length > MAX_DUTIES) { notes.push(`وُجد ${duties.length} بندًا، واستُورد أول ${MAX_DUTIES} (حدّ الوظيفة الواحدة). قسّم الباقي على وظيفة أخرى.`); duties = duties.slice(0, MAX_DUTIES); }

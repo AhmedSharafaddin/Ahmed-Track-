@@ -576,8 +576,14 @@ async function importInto(form, src) {
     box.querySelectorAll('textarea.auto').forEach(autosize);
     if (r.title && !form.elements.title.value.trim()) form.elements.title.value = r.title;
     if (r.summary && !form.elements.summary.value.trim()) { form.elements.summary.value = r.summary; autosize(form.elements.summary); }
+    let depNote = '';
+    if (r.department && form.elements.department_id && !form.elements.department_id.value) { // تُختار الإدارة فقط عند تطابق واضح مع إدارة قائمة؛ وإلا تبقى لاختيار المستخدم
+      const k = (x) => M.norm(x).replace(/^(اداره|قسم)\s+/, '').trim(); const want = k(r.department);
+      const hit = want && [...form.elements.department_id.options].filter((o) => o.value && k(o.textContent) === want);
+      if (hit?.length === 1) { form.elements.department_id.value = hit[0].value; depNote = ` الإدارة: ${hit[0].textContent}.`; } else depNote = ` الإدارة المكتوبة في الملف («${r.department}») لا تطابق إدارة قائمة؛ اخترها يدويًا.`;
+    }
     const cnt = (f) => add.filter((d) => d.freq === f).length; const none = add.filter((d) => !d.freq).length;
-    out.textContent = `أُضيف ${n(add.length)} بندًا (${n(cnt('daily'))} يومي، ${n(cnt('weekly'))} أسبوعي، ${n(cnt('monthly'))} شهري، ${n(none)} بلا تكرار). راجعها ثم احفظ. البنود الدورية فقط تظهر تلقائيًا في مهام من يشغل الوظيفة.${r.notes.length ? ` ${r.notes.join(' ')}` : ''}${add.length < r.duties.length ? ' بلغت الوظيفة حدّها (٤٠) فلم تُضف بقية البنود.' : ''}`;
+    out.textContent = `أُضيف ${n(add.length)} بندًا (${n(cnt('daily'))} يومي، ${n(cnt('weekly'))} أسبوعي، ${n(cnt('monthly'))} شهري، ${n(none)} بلا تكرار). راجعها ثم احفظ. البنود الدورية فقط تظهر تلقائيًا في مهام من يشغل الوظيفة.${r.notes.length ? ` ${r.notes.join(' ')}` : ''}${add.length < r.duties.length ? ' بلغت الوظيفة حدّها (٤٠) فلم تُضف بقية البنود.' : ''}${depNote}`;
     toast('استُخرجت المسؤوليات. راجعها ثم احفظ.');
   } catch (e) { out.textContent = e?.message || 'تعذّرت قراءة الملف.'; }
 }
@@ -592,6 +598,7 @@ function posEditor(p) {
     <div><p class="hint" style="margin-bottom:8px">المسؤوليات: كل بند يكتبه الموظف يُربط بواحدة منها. اجعل المسؤولية «واجبًا يوميًا أو أسبوعيًا أو شهريًا» فتظهر تلقائيًا في مهام كل من يشغل الوظيفة، وتُحسب في مؤشراته. حذف مسؤولية يعطّلها فقط.</p>
     <div class="imp"><b>${I('doc')}استيراد من ملف</b>
       <p class="hint">ارفع التوصيف الوظيفي (Excel أو Word أو PDF أو CSV) فتتحوّل بنوده إلى مسؤوليات تراجعها هنا قبل الحفظ. يُقرأ الملف في جهازك ولا يُرفع لأي خادم. ما لا يُعرف (التكرار والمدة) يبقى فارغًا.</p>
+      <p class="hint"><a href="templates/jd-template.xlsx" download>تنزيل نموذج Excel جاهز</a> بأعمدة وقوائم محدّدة وورقة مثال وتعليمات: أدق طريقة للاستيراد.</p>
       <label class="fld"><span>الملف (xlsx · docx · pdf · csv · txt)</span><input id="imp-file" class="in" type="file" data-imp-file accept=".xlsx,.xlsm,.csv,.tsv,.docx,.pdf,.txt,application/pdf" /></label>
       <details class="imp-paste"><summary>أو الصق النص هنا</summary><textarea class="in auto" rows="4" data-imp-text aria-label="نص التوصيف الوظيفي" placeholder="الصق قائمة المهام: سطر لكل بند. عناوين مثل «المهام اليومية» تحدد التكرار لما تحتها."></textarea><button type="button" class="btn sm" data-act="imp-text">حوّل إلى مسؤوليات</button></details>
       <p class="imp-out" data-imp-out role="status" aria-live="polite"></p></div>
