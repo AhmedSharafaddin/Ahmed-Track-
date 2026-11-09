@@ -55,8 +55,9 @@ const shot = (p, n) => p.screenshot({ path: path.join(OUT, n + '.png'), fullPage
   const b = await chromium.launch();
   /* ───── ١) المدير: لوحة المتابعة ثم الإسناد ───── */
   const mg = await page(b, M, ORG);
-  await mg.goto(BASE); await mg.waitForSelector('.kpis.k6', { timeout: 10000 });
-  ok('manager lands on follow-up board', mg.url().includes('#/track'));
+  await mg.goto(BASE); await mg.waitForSelector('.tdy-hero', { timeout: 10000 });
+  ok('manager lands on the Today page (v2)', mg.url().includes('#/track/today'));
+  await mg.goto(BASE + '#/track'); await mg.waitForSelector('.kpis.k6', { timeout: 10000 });
   ok('board: needs-attention table lists both employees', (await mg.$$('.tbl a.tr')).length === 2);
   ok('board: overdue KPI counts the late task', (await text(mg, '.kpis.k6')).includes('1متأخرة الآن') || (await text(mg, 'a.kpi.hot')).startsWith('1'));
   ok('board: risk list shows overdue task', (await text(mg, '.risks')).includes('مهمة متأخرة'));

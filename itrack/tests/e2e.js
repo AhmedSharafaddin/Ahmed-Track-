@@ -108,10 +108,11 @@ async function join(p, email, pass = 'Passw0rd!') {
   await sup.goto(BASE + '#/team'); await sup.waitForSelector('.kpis .kpi b'); await wait(sup, 500);
   ok('kpi 1/1 submitted', (await text(sup, '.kpi b')).startsWith('1'));
   ok('row shows blocked tag', (await text(sup, '.card:not(.queue) .person')).includes('1 متعثّر'));
-  ok('review queue lists the submitted report', (await sup.$$('.queue .person')).length === 1 && (await text(sup, '.queue')).includes('سارة'));
-  ok('team nav shows review badge', (await text(sup, '#nav a[href="#/track"] em')) === '1');
+  // v2: التقرير المرفوع يتصدّر الصفوف (الأحوج أولًا) وعليه اعتماد/إرجاع في الصف نفسه؛ بطاقة الطابور للأيام الأخرى فقط
+  ok('submitted report leads the rows with inline approve/return', (await sup.$$('.person.rowx')).length === 1 && (await text(sup, '.person.rowx')).includes('سارة') && !!(await sup.$('.person.rowx [data-act=row-approve]')) && !!(await sup.$('.person.rowx [data-act=row-return]')));
+  ok('team nav shows review badge', (await text(sup, '#nav a[href^="#/track"] em')) === '1');
   await axe(sup, 'team (navy desk)');
-  await sup.click('a.person'); await sup.waitForSelector('[data-form=review]');
+  await sup.click('.person .pmain'); await sup.waitForSelector('[data-form=review]');
   ok('member report readable', (await sup.$$('.items .item')).length === 3 && (await text(sup, '.items')).includes('السبب'));
   await sup.click('[data-form=review] button[value=return]'); await wait(sup, 300);
   ok('return needs reason (client)', !!(await sup.$('[data-form=review] button[value=return]')));
@@ -129,9 +130,9 @@ async function join(p, email, pass = 'Passw0rd!') {
 
   // ٥) المسؤول يعتمد ويرى السجل
   await gm.goto(BASE + '#/team'); await gm.waitForSelector('.kpis'); await wait(gm, 500);
-  ok('admin sees whole org (2)', (await gm.$$('.card:not(.queue) a.person')).length === 2);
-  ok('admin queue shows resubmitted report', (await gm.$$('.queue .person')).length === 1);
-  await gm.click('a.person:has-text("سارة")'); await gm.waitForSelector('[data-form=review]');
+  ok('admin sees whole org (2)', (await gm.$$('.card:not(.queue) .person.rowx')).length === 2);
+  ok('admin sees resubmitted report as awaiting review (inline actions)', (await gm.$$('.person.rowx [data-act=row-approve]')).length === 1);
+  await gm.click('.person:has-text("سارة") .pmain'); await gm.waitForSelector('[data-form=review]');
   await gm.fill('[data-form=review] [name=comment]', 'ممتاز'); await gm.click('[data-form=review] button[value=approve]'); await wait(gm, 700);
   ok('approved', (await text(gm, '.vh .st')).includes('معتمد'));
   const trail = await gm.$$eval('.trail li', (l) => l.map((x) => x.textContent.replace(/\s+/g, ' ')));
