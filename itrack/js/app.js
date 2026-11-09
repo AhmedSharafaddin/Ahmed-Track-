@@ -38,9 +38,10 @@ const ACTION = {
   'report.create': 'بدأ التقرير', 'report.submit': 'رفع التقرير', 'report.resubmit': 'أعاد رفع التقرير بعد التعديل',
   'report.approve': 'اعتمد التقرير', 'report.return': 'أعاد التقرير للتعديل', 'report.comment': 'أضاف ملاحظة',
   'task.assign': 'أسند مهمة', 'task.edit': 'عدّل مهمة مسندة', 'task.cancel': 'ألغى مهمة مسندة', 'task.done': 'رفع مهمة منجزة', 'task.reopen': 'أعاد فتح مهمة',
-  'task.blocked': 'سجّل تعثّرًا', 'task.approve': 'اعتمد مهمة', 'task.return': 'أعاد مهمة للتعديل',
+  'task.blocked': 'سجّل تعثّرًا', 'report.remind': 'ذكّر بالتقرير', 'task.approve': 'اعتمد مهمة', 'task.return': 'أعاد مهمة للتعديل',
   'project.create': 'أنشأ مشروعًا', 'project.update': 'عدّل مشروعًا', 'settings.update': 'غيّر إعدادات التشغيل', 'key.create': 'أصدر مفتاح API', 'key.revoke': 'ألغى مفتاح API',
 };
+const isV2 = () => document.documentElement.dataset.ui === 'v2';
 const chip = (st) => `<span class="st st-${st}">${STATUS[st] || st}</span>`;
 const store = { get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, del: (k) => { try { localStorage.removeItem(k); } catch {} } };
 
@@ -53,7 +54,9 @@ const S = {
   tp: '30', tv: null, tf: { st: 'open', kind: '', dep: '', member: '', q: '' }, af: null, calM: null, // المتابعة
   codes: {}, // رموز الدعوة/إعادة التعيين الصادرة في هذه الجلسة (تُعرض مرة واحدة)
   info: {}, // قدرات الخادم
+  rem: new Set(), ret: null, // ذُكّر هذه الجلسة، وإعادة تقرير قيد الكتابة
 };
+S.f.sort = (() => { const v = (() => { try { return JSON.parse(localStorage.getItem('it:tsort')); } catch { return null; } })(); return v === 'dep' ? 'dep' : 'urgent'; })(); S.f.q = ''; S.f.cp = 'weekly'; S.f.all = false;
 // رابط الدعوة ‎#/code/XXXX-XXXX-XXXX‎: يفتح «عندي رمز» معبّأً
 const codeFromHash = () => { const m = location.hash.match(/^#\/code\/([A-Za-z0-9-]{12,16})/); return m ? m[1].toUpperCase() : ''; };
 if (codeFromHash()) { S.authTab = 'code'; S.prefCode = codeFromHash(); }
@@ -62,7 +65,7 @@ const view = $('#view');
 
 /** تحميل بيانات مرة واحدة ثم إعادة الرسم. الشاشات تطلب ما تحتاجه فقط. */
 // بيانات تتغيّر بفعل غيرك (الموظف يرفع، المدير يعتمد): تُعرض فورًا من الذاكرة ثم تُحدَّث في الخلفية إن قدُمت
-const TTL = [['task|', 15000], ['proj|', 20000], ['asg', 20000], ['met|', 30000], ['inbox', 30000]];
+const TTL = [['task|', 15000], ['proj|', 20000], ['asg', 20000], ['met|', 30000], ['inbox', 30000], ['comp', 60000]];
 const cacheAt = new Map();
 function need(key, loader) {
   if (S.cache.has(key)) {
@@ -102,7 +105,7 @@ function route() {
   const [name = '', a = '', b = '', c = ''] = location.hash.replace(/^#\/?/, '').replace(/\?.*$/, '').split('/').map(decodeURIComponent);
   return { name, a, b, c };
 }
-function home() { return hasTeam() ? '#/track' : '#/day'; }
+function home() { return hasTeam() ? (isV2() ? '#/track/today' : '#/track') : '#/day'; }
 // الصندوق يُحدَّث عند العودة للتبويب أو بعد ٣٠ ثانية، لا عند كل تنقّل (يوفّر ٦ استعلامات لكل شاشة)
 let inboxAt = 0;
 const freshInbox = () => { if (Date.now() - inboxAt > 30000) { drop('inbox'); inboxAt = Date.now(); } };
@@ -147,7 +150,7 @@ function paintNav() {
   const items = [
     ['day', '#/day', 'today', 'يومي'],
     ['my', 'my/', 'note', 'مهامي'], // مساحتي الشخصية (واجهة مركز القيادة داخل ITrack)
-    hasTeam() && ['track', '#/track', 'people', 'المتابعة'],
+    hasTeam() && ['track', isV2() ? '#/track/today' : '#/track', 'people', 'المتابعة'],
     isAdmin() && ['org', '#/org', 'doc', 'الهيكل'],
     isAdmin() && ['audit', '#/audit', 'list', 'السجل'],
     ['settings', '#/settings', 'gear', 'الإعدادات'],
@@ -179,7 +182,7 @@ function screen() {
   switch (r.name) {
     case 'day': return vDay(isDay(r.a) && r.a <= today() ? r.a : today());
     case 'team': return hasTeam() ? vTeam(isDay(r.a) && r.a <= today() ? r.a : today()) : deny();
-    case 'track': return hasTeam() ? TR.vTrack(r.a, r.b, r.c) : deny();
+    case 'track': return hasTeam() ? (r.a === 'today' && isV2() ? TR.vToday() : TR.vTrack(r.a, r.b, r.c)) : deny();
     case 'm': return vMember(r.a, isDay(r.b) && r.b <= today() ? r.b : today());
     case 'org': return isAdmin() ? vOrg(r.a || 'members') : deny();
     case 'audit': return isAdmin() ? vAudit() : deny();
@@ -415,7 +418,8 @@ window.addEventListener('online', () => Object.keys(S.dirty).forEach((d) => S.di
 window.addEventListener('beforeunload', (e) => { if (Object.values(S.dirty).some(Boolean)) e.preventDefault(); });
 
 /* ═════════════ الفريق ═════════════ */
-function vTeam(d) {
+function vTeam(d) { return isV2() ? vTeam2(d) : vTeamClassic(d); }
+function vTeamClassic(d) {
   const day = need(`day|${d}`, () => call('GET', `/api/day?date=${d}`));
   const list = teamList();
   const rows = new Map((day?.rows || []).map((r) => [r.member_id, r]));
@@ -465,6 +469,138 @@ function vTeam(d) {
   return `<div class="wrap">${vh('المتابعة', `التقارير اليومية · ${isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير'}`)}${TR.tabs('team')}
     ${dayBar('#/team', d, null).replace(/<ol class="strip"[\s\S]*<\/ol>/, '')}
     ${list.length ? kpis : ''}${rollup}${qCard}<div class="card">${list.length ? filters : ''}${body}<p class="hint" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div></div>`;
+}
+
+/* ═════════════ الفريق v2: أرقام تُضغط، صفوف مرتّبة بالأحوج، إجراءات على الصف، وتذكير ═════════════ */
+const SENT = ['submitted', 'approved', 'returned'];
+const urgRank = (st, bl) => (bl ? 0 : st === 'submitted' ? 1 : st === 'none' ? 2 : st === 'draft' ? 3 : st === 'returned' ? 4 : 5);
+function teamState(d) {
+  const day = need(`day|${d}`, () => call('GET', `/api/day?date=${d}`));
+  const list = teamList();
+  const rows = new Map((day?.rows || []).map((r) => [r.member_id, r]));
+  const stOf = (m) => rows.get(m.id)?.status || 'none';
+  return { day, list, rows, stOf };
+}
+/** صف تقرير واحد: الحالة بنظرة (شريط لوني + شارة)، والإجراء الممكن عليه في الصف نفسه. */
+function reportRow(m, d, o = {}) {
+  const st = o.st || 'none'; const r = o.r; const pos = posById(m.position_id); const dep = depById(m.department_id); const sec = secById(m.section_id);
+  const nm = esc(m.name); const key = `${m.id}|${d}`; const id = esc(m.id);
+  const sub = o.sub || [pos?.title || ROLE[m.role], o.dep === false ? '' : dep?.name, sec?.name].filter(Boolean).map(esc).join(' · ');
+  const stats = r ? `${r.items ? `<span>${n(r.items)} بند</span>` : ''}${r.minutes ? `<span>${mins(r.minutes)}</span>` : ''}${r.blocked ? `<span class="tag blocked">${n(r.blocked)} متعثّر</span>` : ''}${r.late ? '<span class="tag late">متأخر</span>' : ''}` : '';
+  let acts = '';
+  if (st === 'submitted') acts = `<button class="btn sm ok" data-act="row-approve" data-id="${id}" data-d="${d}" aria-label="اعتماد تقرير ${nm}">${I('check')}اعتماد</button><button class="btn sm warn" data-act="row-return" data-id="${id}" data-d="${d}" aria-label="إعادة تقرير ${nm} للتعديل">${I('back')}إرجاع</button>`;
+  else if (['none', 'draft'].includes(st) && m.status === 'active') acts = S.rem.has(key) ? `<span class="tag done">${I('check')}ذُكّر</span>` : `<button class="btn sm" data-act="row-remind" data-id="${id}" data-d="${d}" aria-label="تذكير ${nm} برفع التقرير">${I('bell')}تذكير</button>`;
+  const ret = S.ret?.key === key ? `<div class="pret"><input class="in" data-ret="${id}" data-k="ret-${id}" maxlength="1000" placeholder="سبب الإعادة (مطلوب): ما الذي يحتاج تعديلًا؟" aria-label="سبب إعادة تقرير ${nm}" value="${esc(S.ret.text || '')}" /><button class="btn sm warn" data-act="row-return-go" data-id="${id}" data-d="${d}">إرسال للتعديل</button><button class="btn sm ghost" data-act="row-return-x">إلغاء</button></div>` : '';
+  return `<div class="person rowx${m.status === 'disabled' ? ' off' : ''}" data-st="${r?.blocked ? 'blocked' : st}"><a class="pmain" href="#/m/${encodeURIComponent(m.id)}/${d}">${avatar(m.name)}<div class="who"><b>${nm}</b><small>${sub}</small></div><div class="nums">${stats}${m.status === 'invited' ? '<span class="tag out">لم ينضم بعد</span>' : ''}</div></a><div class="pst">${chip(st)}</div><div class="pacts">${acts}</div>${ret}</div>`;
+}
+const remindMsg = (r) => [r.sent ? `ذُكّر ${n(r.sent)}` : '', r.recent ? `${n(r.recent)} ذُكّروا قبل أقل من ٤ ساعات` : '', r.done ? `${n(r.done)} رفعوا بالفعل` : '', r.denied ? `${n(r.denied)} خارج صلاحيتك أو لم ينضموا` : ''].filter(Boolean).join(' · ') || 'لا أحد يحتاج تذكيرًا.';
+async function remind(ids, d) {
+  try {
+    const r = await call('POST', '/api/remind', { date: d, members: ids });
+    ids.forEach((id) => S.rem.add(`${id}|${d}`)); drop('audit'); toast(remindMsg(r));
+  } catch (er) { toast(er.status === 404 || er.code === 'not-found' ? 'الخادم لا يدعم التذكير بعد: حدّث الخادم بآخر نسخة من worker.js.' : er.message); }
+  render();
+}
+/** تعديل محلي فوري ثم مزامنة صامتة: الصف يتغيّر دون وميض تحميل. */
+function patchDay(d, id, patch) { const x = S.cache.get(`day|${d}`); const row = x?.rows?.find((r) => r.member_id === id); if (row) Object.assign(row, patch); }
+function refreshDay(d) { return call('GET', `/api/day?date=${d}`).then((x) => S.cache.set(`day|${d}`, x), () => {}).finally(render); }
+async function reviewRow(id, d, action, comment) {
+  const m = memberById(id);
+  try {
+    await call('POST', '/api/review', { member_id: id, date: d, action, comment });
+    patchDay(d, id, { status: action === 'approve' ? 'approved' : 'returned' });
+    drop(`rep|${id}|${d}`, `hist|${id}`, 'audit', 'inbox', 'met|'); S.ret = null;
+    toast(action === 'approve' ? `اعتُمد تقرير ${m?.name || ''}.` : `أُعيد تقرير ${m?.name || ''} للتعديل.`);
+  } catch (er) { toast(er.message); }
+  render(); refreshDay(d);
+}
+
+/** مؤشر الالتزام برفع التقارير لكل إدارة: أعمدة صغيرة أسبوعية أو شهرية، والأحدث على اليمين. */
+function compCard() {
+  const c = need('comp', () => call('GET', '/api/compliance'));
+  const mode = S.f.cp === 'monthly' ? 'monthly' : 'weekly';
+  const seg = `<div class="seg" role="group" aria-label="نافذة الالتزام">${[['weekly', 'أسبوعي'], ['monthly', 'شهري']].map(([k, l]) => `<button type="button" data-act="cp" data-v="${k}" aria-pressed="${mode === k}">${l}</button>`).join('')}</div>`;
+  const head = `<div class="row hrow"><h2 style="margin:0">${I('chart')}الالتزام برفع التقارير</h2>${seg}</div>`;
+  if (!c) return `<div class="card no-print">${head}<div class="skel"><i></i></div></div>`;
+  if (c.error) return `<div class="card no-print">${head}<p class="hint" role="alert">تعذّر تحميل مؤشر الالتزام: ${esc(c.error)} (يحتاج آخر نسخة من الخادم).</p></div>`;
+  if (!c.teams.length) return `<div class="card no-print">${head}<div class="empty"><p>لا أعضاء فعّالون لحساب الالتزام.</p></div></div>`;
+  const tone = (v) => (v == null ? '' : v >= 85 ? 'ok' : v >= 65 ? 'mid' : 'bad');
+  const unit = mode === 'weekly' ? 'أسبوع' : '٣٠ يومًا';
+  const row = (name, cnt, ws, all) => {
+    const last = ws[ws.length - 1]; const prev = ws[ws.length - 2];
+    const dl = last?.rate != null && prev?.rate != null ? last.rate - prev.rate : null;
+    const bars = ws.map((w) => `<i class="${w.rate == null ? 'nil' : tone(w.rate)}" style="height:${w.rate == null ? 3 : Math.max(w.rate, 6)}%" title="${rel(w.from)} ← ${rel(w.to)}: ${w.rate == null ? 'لا بيانات' : `${n(w.rate)}٪ (${n(w.sub)} من ${n(w.exp)})`}"></i>`).join('');
+    const label = `التزام ${name} ${mode === 'weekly' ? 'أسبوعيًا' : 'شهريًا'}: ${ws.map((w) => (w.rate == null ? 'لا بيانات' : `${n(w.rate)}٪`)).join('، ')}`;
+    return `<li class="cmp-row${all ? ' all' : ''}"><div class="cn"><b>${esc(name)}</b><small>${n(cnt)} موظف</small></div><div class="cbars" role="img" aria-label="${esc(label)}">${bars}</div><div class="cv ${tone(last?.rate)}"><b>${last?.rate == null ? '—' : `${n(last.rate)}٪`}</b>${dl == null ? '<small>—</small>' : dl === 0 ? '<small>بلا تغيّر</small>' : `<small class="${dl > 0 ? 'up' : 'down'}">${dl > 0 ? '▲' : '▼'} ${n(Math.abs(dl))} نقطة</small>`}</div></li>`;
+  };
+  return `<div class="card no-print">${head}<ul class="cmp-list">${c.teams.length > 1 ? row('كل الفرق', c.all.n, c.all[mode], true) : ''}${c.teams.map((t) => row(t.name, t.n, t[mode], false)).join('')}</ul>
+    <p class="hint" style="margin-top:12px">كل عمود = ${unit} حتى ${rel(c.until)}، والأحدث على اليمين. الالتزام = التقارير المرفوعة ÷ المتوقَّعة (كل عضو فعّال × أيام العمل منذ انضمامه، دون أيام العطلة). أخضر ٨٥٪ فأكثر، كهرماني ٦٥٪، أحمر دون ذلك.</p></div>`;
+}
+
+function vTeam2(d) {
+  const { day, list, rows, stOf } = teamState(d);
+  const prev = need(`day|${addD(d, -1)}`, () => call('GET', `/api/day?date=${addD(d, -1)}`));
+  const isSent = (m) => SENT.includes(stOf(m));
+  const sent = list.filter(isSent).length;
+  const waiting = list.filter((m) => stOf(m) === 'submitted').length;
+  const missing = list.filter((m) => ['none', 'draft'].includes(stOf(m)));
+  const blockedN = list.reduce((s, m) => s + (rows.get(m.id)?.blocked || 0), 0);
+  const blockedP = list.filter((m) => rows.get(m.id)?.blocked > 0).length;
+  const pctOf = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+  let cmp = '';
+  if (prev && !prev.error && list.length) {
+    const pr = new Map((prev.rows || []).map((r) => [r.member_id, r])); const ps = list.filter((m) => SENT.includes(pr.get(m.id)?.status || 'none')).length;
+    const dl = pctOf(sent, list.length) - pctOf(ps, list.length);
+    cmp = ` · أمس ${n(ps)} من ${n(list.length)}${dl ? ` <span class="${dl > 0 ? 'up' : 'down'}">${dl > 0 ? '▲' : '▼'} ${n(Math.abs(dl))} نقطة</span>` : ''}`;
+  }
+  const f = S.f.st;
+  const kp = (v, l, sub, cls, key) => `<button type="button" class="kpi ${cls || ''}" data-act="fst" data-v="${key}" aria-pressed="${f === key}"><b>${v}</b><span>${l}</span><span class="ks">${sub}</span></button>`;
+  const kpis = `<div class="kpis">
+    ${kp(`${n(sent)}<small style="font-size:1rem;color:var(--muted)"> من ${n(list.length)}</small>`, `رفعوا تقرير ${rel(d)}`, `${n(pctOf(sent, list.length))}٪${cmp}`, '', 'sent')}
+    ${kp(n(waiting), 'بانتظار مراجعتك', waiting ? 'اضغط للمراجعة والاعتماد' : 'لا شيء ينتظرك', waiting ? 'accentk' : '', 'submitted')}
+    ${kp(n(missing.length), 'لم يرفعوا', list.length ? `${n(pctOf(missing.length, list.length))}٪ من الفريق` : '—', missing.length ? 'warnk' : '', 'missing')}
+    ${kp(n(blockedN), 'بنود متعثّرة', blockedN ? `عند ${n(blockedP)} موظف` : 'لا تعثّر', blockedN ? 'bad' : '', 'blocked')}</div>`;
+  const deps = S.boot.departments.filter((x) => x.active);
+  const roll = deps.map((x) => {
+    const ms = list.filter((m) => m.department_id === x.id); if (!ms.length) return null;
+    return { x, total: ms.length, sn: ms.filter(isSent).length, wait: ms.filter((m) => stOf(m) === 'submitted').length, bl: ms.reduce((t, m) => t + (rows.get(m.id)?.blocked || 0), 0) };
+  }).filter(Boolean);
+  const rollup = day && !day.error && roll.length > 1 ? `<div class="rollup no-print" role="group" aria-label="ملخص الإدارات">${roll.map((r) => `<button type="button" class="rcard" data-act="fdep-set" data-v="${esc(r.x.id)}" aria-pressed="${S.f.dep === r.x.id}">
+      <b>${esc(r.x.name)}</b><span class="rn">${n(r.sn)} من ${n(r.total)} رفعوا</span><i class="bar" aria-hidden="true"><u style="width:${pctOf(r.sn, r.total)}%"></u></i>
+      <span class="rm">${r.wait ? `<em>${n(r.wait)} بانتظار المراجعة</em>` : ''}${r.bl ? `<em class="hot">${n(r.bl)} متعثّر</em>` : ''}${!r.wait && !r.bl ? '<em>لا شيء معلّق</em>' : ''}</span></button>`).join('')}</div>` : '';
+  const q = (S.f.q || '').trim();
+  const match = (m) => (!S.f.dep || m.department_id === S.f.dep) && (!q || m.name.includes(q) || (posById(m.position_id)?.title || '').includes(q))
+    && (!f || (f === 'blocked' ? rows.get(m.id)?.blocked > 0 : f === 'missing' ? ['none', 'draft'].includes(stOf(m)) : f === 'sent' ? isSent(m) : stOf(m) === f));
+  const shown = list.filter(match);
+  const cnt = (fn) => list.filter(fn).length;
+  const fchip = (v, l, c) => `<button class="chip" data-act="fst" data-v="${v}" aria-pressed="${f === v}">${l}${c == null ? '' : ` <b>${n(c)}</b>`}</button>`;
+  const filters = `<div class="filters no-print"><input class="in" type="search" data-fq data-k="fq" placeholder="ابحث باسم الموظف أو وظيفته" aria-label="بحث في الفريق" value="${esc(S.f.q || '')}" style="max-width:260px" />
+    ${deps.length > 1 ? `<select class="in" data-act="fdep" aria-label="الإدارة"><option value="">كل الإدارات</option>${deps.map((x) => `<option value="${esc(x.id)}"${x.id === S.f.dep ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}
+    ${fchip('', 'الكل', list.length)}${fchip('missing', 'لم يرفع', missing.length)}${fchip('submitted', 'بانتظار المراجعة', waiting)}${fchip('approved', 'معتمد', cnt((m) => stOf(m) === 'approved'))}${fchip('returned', 'مُعاد', cnt((m) => stOf(m) === 'returned'))}${fchip('blocked', 'متعثّر', blockedP)}
+    <div class="seg" role="group" aria-label="الترتيب"><button type="button" data-act="tsort" data-v="urgent" aria-pressed="${S.f.sort === 'urgent'}">الأحوج أولًا</button><button type="button" data-act="tsort" data-v="dep" aria-pressed="${S.f.sort === 'dep'}">حسب الإدارة</button></div></div>`;
+  const byUrg = (a, b) => urgRank(stOf(a), rows.get(a.id)?.blocked) - urgRank(stOf(b), rows.get(b.id)?.blocked) || a.name.localeCompare(b.name, 'ar');
+  const CAP = 120; const cap = !S.f.all && shown.length > CAP;
+  const rowOf = (m) => reportRow(m, d, { st: stOf(m), r: rows.get(m.id), dep: S.f.sort !== 'dep' });
+  let body;
+  if (!list.length) body = `<div class="empty"><p>${isAdmin() ? 'لا أعضاء بعد.' : 'لا أحد يتبعك.'}</p>${isAdmin() ? '<a class="btn primary sm" href="#/org/members">إضافة أعضاء</a>' : ''}</div>`;
+  else if (!day) body = '<div class="skel"><i></i><i></i></div>';
+  else if (day.error) body = errCard(day);
+  else if (!shown.length) body = `<div class="empty"><p>لا نتائج${q || f || S.f.dep ? ' بهذه التصفية' : ''}.</p>${q || f || S.f.dep ? '<button class="btn sm" data-act="fclear">مسح التصفية</button>' : ''}</div>`;
+  else if (S.f.sort === 'dep') {
+    const groups = new Map(); for (const m of shown.slice(0, cap ? CAP : undefined).sort(byUrg)) { const k = m.department_id || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+    body = [...groups.entries()].map(([k, ms]) => `<p class="grp">${esc(depById(k)?.name || 'بلا إدارة')} · ${n(ms.length)}</p><div class="people">${ms.map(rowOf).join('')}</div>`).join('');
+  } else body = `<div class="people">${[...shown].sort(byUrg).slice(0, cap ? CAP : undefined).map(rowOf).join('')}</div>`;
+  if (cap) body += `<p class="hint" style="margin-top:12px">يُعرض أول ${n(CAP)} من ${n(shown.length)} (الأحوج أولًا). <button class="link" data-act="fall">عرض الكل</button> أو ضيّق بالبحث والتصفية.</p>`;
+  const remindable = missing.filter((m) => m.status === 'active' && match(m) && !S.rem.has(`${m.id}|${d}`));
+  const bulk = remindable.length ? `<div class="bulkbar no-print"><span><b>${n(remindable.length)}</b> لم يرفعوا تقرير ${rel(d)} بعد.</span><button class="btn sm" data-act="remind-all" data-d="${d}">${I('bell')}ذكّر الجميع</button></div>` : '';
+  const ib = inbox();
+  const old = ib && !ib.error ? ib.review.filter((x) => x.date !== d && memberById(x.member_id)) : [];
+  const qCard = old.length ? `<div class="card queue no-print"><h2>${I('hourglass')}تقارير أيام أخرى بانتظار مراجعتك · ${n(old.length)}</h2><div class="people">${old.slice(0, 5).map((x) => reportRow(memberById(x.member_id), x.date, { st: 'submitted', sub: `تقرير ${rel(x.date)}${x.submitted_at ? ` · رُفع ${fTime.format(new Date(x.submitted_at))}` : ''}`, dep: false })).join('')}</div>${old.length > 5 ? `<p class="hint" style="margin-top:8px">و${n(old.length - 5)} غيرها.</p>` : ''}</div>` : '';
+  const tools = `${TR.periodSeg()}<button class="btn sm" data-act="csv" data-v="reports">${I('doc')}Excel: تقارير الفترة</button><button class="btn sm" data-act="print">${I('doc')}PDF / طباعة</button>`;
+  const ph = `<div class="print-head"><b>${esc(S.boot.org.name)} — تقرير المتابعة اليومية</b><span>${rel(d)} · طُبع بواسطة ${esc(S.boot.me.name)} في ${fTime.format(new Date())}</span></div>`;
+  return `<div class="wrap">${ph}${vh('المتابعة', `التقارير اليومية · ${isAdmin() ? 'كل أعضاء الجهة' : 'كل من يتبعك مباشرة أو عبر مدير'}`, `<div class="row no-print">${tools}</div>`)}${TR.tabs('team')}
+    ${dayBar('#/team', d, null).replace(/<ol class="strip"[\s\S]*<\/ol>/, '')}
+    ${list.length ? kpis : ''}${rollup}${qCard}<div class="card">${list.length ? filters : ''}${bulk}${body}<p class="hint no-print" style="margin-top:12px">المسودة تظهر حالتها فقط؛ محتواها يظهر بعد أن يرفعها الموظف.</p></div>${list.length ? compCard() : ''}</div>`;
 }
 
 /* ═════════════ صفحة موظف ═════════════ */
@@ -652,7 +788,9 @@ function vAudit() {
 function vSettings() {
   const th = document.documentElement.dataset.theme;
   return `<div class="wrap">${vh('الإعدادات')}<div class="grid2"><div class="stack">
-    <div class="card"><h2>${I('sun')}المظهر</h2><div class="row">${[['petrol', 'بترولي'], ['navy', 'كحلي'], ['aqua', 'سماوي']].map(([k, l]) => `<button class="chip" data-act="theme" data-v="${k}" aria-pressed="${th === k}">${l}</button>`).join('')}</div></div>
+    <div class="card"><h2>${I('sun')}المظهر</h2><p class="hint" style="margin:-6px 0 8px">اللون</p><div class="row">${[['petrol', 'بترولي'], ['navy', 'كحلي'], ['aqua', 'سماوي']].map(([k, l]) => `<button class="chip" data-act="theme" data-v="${k}" aria-pressed="${th === k}">${l}</button>`).join('')}</div>
+      ${isV2() ? `<p class="hint" style="margin:14px 0 8px">الإضاءة</p><div class="row">${[['auto', 'تلقائي (حسب الجهاز)'], ['light', 'فاتح'], ['dark', 'داكن']].map(([k, l]) => `<button class="chip" data-act="scheme" data-v="${k}" aria-pressed="${(store.get('it:scheme') || 'auto') === k}">${l}</button>`).join('')}</div>` : ''}
+      <p class="hint" style="margin:14px 0 8px">التصميم</p><div class="row">${[['v2', 'الجديد'], ['classic', 'الكلاسيكي']].map(([k, l]) => `<button class="chip" data-act="ui" data-v="${k}" aria-pressed="${(isV2() ? 'v2' : 'classic') === k}">${l}</button>`).join('')}</div></div>
     <div class="card"><h2>${I('user')}الحساب</h2><p dir="ltr" style="margin:0 0 6px;text-align:right">${esc(S.me.email)}</p><p class="hint">${esc(S.boot.me.name)} · ${ROLE[myRole()]} في «${esc(S.boot.org.name)}»</p>
       <div class="row" style="margin-top:12px">${S.me.orgs.length > 1 ? '<button class="btn" data-act="switch-org">تبديل الجهة</button>' : ''}<button class="btn" data-act="signout">خروج</button></div></div>
     <div class="card"><h2>${I('gear')}تغيير كلمة المرور</h2><form data-form="password" class="form-grid">
@@ -702,6 +840,30 @@ document.addEventListener('click', async (e) => {
     case 'pick-org': S.org = el.dataset.id; store.set('it:org', S.org); loadBoot(); render(); break;
     case 'switch-org': S.org = null; S.boot = null; store.del('it:org'); S.cache.clear(); render(); break;
     case 'theme': setTheme(el.dataset.v); break;
+    case 'scheme': setScheme(el.dataset.v); break;
+    case 'ui': setUi(el.dataset.v); break;
+    case 'side-toggle': setSide(document.documentElement.dataset.side !== 'min'); break;
+    case 'tsort': S.f.sort = el.dataset.v === 'dep' ? 'dep' : 'urgent'; store.set('it:tsort', S.f.sort); render(); break;
+    case 'fclear': S.f.st = ''; S.f.dep = ''; S.f.q = ''; render(); break;
+    case 'fall': S.f.all = true; render(); break;
+    case 'cp': S.f.cp = el.dataset.v === 'monthly' ? 'monthly' : 'weekly'; render(); break;
+    case 'print': window.print(); break;
+    case 'goto-team': S.f.st = el.dataset.v || ''; S.f.dep = ''; S.f.q = ''; location.hash = '#/team'; break;
+    case 'row-approve': { el.disabled = true; await reviewRow(el.dataset.id, el.dataset.d, 'approve', ''); break; }
+    case 'row-return': S.ret = S.ret?.key === `${el.dataset.id}|${el.dataset.d}` ? null : { key: `${el.dataset.id}|${el.dataset.d}`, text: '' }; render(); setTimeout(() => view.querySelector(`[data-ret="${CSS.escape(el.dataset.id)}"]`)?.focus(), 40); break;
+    case 'row-return-x': S.ret = null; render(); break;
+    case 'row-return-go': {
+      const text = (view.querySelector(`[data-ret="${CSS.escape(el.dataset.id)}"]`)?.value || '').trim();
+      if (!text) { toast('اكتب سبب الإعادة حتى يعرف ما يعدّل.'); view.querySelector(`[data-ret="${CSS.escape(el.dataset.id)}"]`)?.focus(); break; }
+      el.disabled = true; await reviewRow(el.dataset.id, el.dataset.d, 'return', text); break;
+    }
+    case 'row-remind': { el.disabled = true; await remind([el.dataset.id], el.dataset.d); break; }
+    case 'remind-all': {
+      const d2 = el.dataset.d; const { list, stOf } = teamState(d2);
+      const ids = list.filter((m) => ['none', 'draft'].includes(stOf(m)) && m.status === 'active' && !S.rem.has(`${m.id}|${d2}`)).map((m) => m.id);
+      if (!ids.length) { toast('لا أحد يحتاج تذكيرًا.'); break; }
+      el.disabled = true; await remind(ids, d2); break;
+    }
     case 'state': { const it = S.draft[d]?.items[+el.dataset.i]; if (it) { it.state = el.dataset.v; if (it.state !== 'blocked') it.blocker = ''; touch(d); render(); if (it.state === 'blocked') setTimeout(() => view.querySelector(`[data-k="bl-${el.dataset.i}"]`)?.focus(), 30); } break; }
     case 'del-item': { const dr = S.draft[d]; if (dr) { const [gone] = dr.items.splice(+el.dataset.i, 1); touch(d); render(); toast(`حُذف: ${gone.text.slice(0, 40)}`); } break; }
     case 'submit': {
@@ -742,6 +904,7 @@ document.addEventListener('change', (e) => {
   if (el.dataset.impFile !== undefined) { const f = el.files?.[0]; el.value = ''; if (f) importInto(el.closest('form'), f); return; }
   if (TR.input(el)) return;
   if (el.dataset.act === 'fdep') { S.f.dep = el.value; render(); return; }
+  if (el.dataset.fq !== undefined) return;
   if (el.dataset.edit && el.tagName === 'SELECT') {
     const d = curDay(); const it = S.draft[d]?.items[+el.dataset.i]; if (!it) return;
     it[el.dataset.edit] = el.dataset.edit === 'minutes' ? (Number(el.value) || null) : (el.value || null);
@@ -751,6 +914,8 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.matches('textarea.auto')) autosize(el);
+  if (el.dataset.fq !== undefined) { S.f.q = el.value; render(); return; }
+  if (el.dataset.ret !== undefined && S.ret) { S.ret.text = el.value; return; }
   if (el.type !== 'checkbox' && (el.dataset.af !== undefined || el.dataset.tq !== undefined)) { TR.input(el); return; }
   if (!el.dataset.edit || el.tagName === 'SELECT') return;
   const d = curDay(); const dr = S.draft[d]; if (!dr) return;
@@ -764,6 +929,8 @@ document.addEventListener('focusout', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.target.id === 'new-item') { e.preventDefault(); e.target.form.requestSubmit(); }
+  if (e.key === 'Enter' && !e.isComposing && e.target.dataset?.ret !== undefined) { e.preventDefault(); e.target.closest('.pret')?.querySelector('[data-act=row-return-go]')?.click(); }
+  if (e.key === 'Escape' && e.target.dataset?.ret !== undefined) { S.ret = null; render(); }
 });
 
 document.addEventListener('submit', async (e) => {
@@ -864,11 +1031,23 @@ async function mutate(fn, msg) {
   catch (er) { toast(er.message); return null; }
 }
 
+function applyScheme() {
+  const sc = store.get('it:scheme'); const dark = sc === 'dark' || (sc !== 'light' && matchMedia?.('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.scheme = dark ? 'dark' : 'light';
+  const th = document.documentElement.dataset.theme;
+  $('meta[name=theme-color]')?.setAttribute('content', isV2() ? (dark ? '#0b1016' : '#f5f7fa') : { petrol: '#062a2f', navy: '#0c1a35', aqua: '#07617a' }[th]);
+}
+function setScheme(v) { store.set('it:scheme', ['light', 'dark'].includes(v) ? v : 'auto'); applyScheme(); render(); }
+function setUi(v) { const ui = v === 'classic' ? 'classic' : 'v2'; store.set('it:ui', ui); document.documentElement.dataset.ui = ui; applyScheme(); if (ui === 'classic' && route().name === 'track' && route().a === 'today') location.hash = '#/track'; render(); }
+function setSide(min) { if (min) document.documentElement.dataset.side = 'min'; else delete document.documentElement.dataset.side; store.set('it:side', min ? 'min' : 'max'); syncSide(); }
+function syncSide() { const min = document.documentElement.dataset.side === 'min'; const b = $('.side-toggle'); if (b) { b.setAttribute('aria-pressed', String(min)); b.setAttribute('aria-label', min ? 'توسيع الشريط الجانبي' : 'طيّ الشريط الجانبي'); } }
+matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (!['light', 'dark'].includes(store.get('it:scheme'))) { applyScheme(); render(); } });
+syncSide();
 function setTheme(v) {
   const th = ['petrol', 'navy', 'aqua'].includes(v) ? v : 'petrol';
   document.documentElement.dataset.theme = th;
   store.set('it:theme', th);
-  $('meta[name=theme-color]')?.setAttribute('content', { petrol: '#062a2f', navy: '#0c1a35', aqua: '#07617a' }[th]);
+  applyScheme();
   render();
 }
 
@@ -892,6 +1071,7 @@ S.tv = store.get('it:tv') || 'list';
 TR.init({
   S, need, drop, call, render, toast, esc, I, n, avatar, memberById, posById, depById, secById, members, isAdmin, hasTeam, today, addD, parse, keyOf, rel, mins,
   vh, loadingCard, errCard, deny, ROLE, ACTION, fShort, fTime, inbox, store, loadBoot, apiUrl, session,
+  isV2, teamState, reportRow, compCard, remind,
 });
 
 initAuth((u) => {

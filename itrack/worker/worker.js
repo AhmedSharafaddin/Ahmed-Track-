@@ -743,6 +743,63 @@ route('POST', '/api/review', async ({ db, v, body }) => {
   return { status };
 });
 
+/** تذكير بالتقرير اليومي: إشعار داخلي لمن لم يرفع تقريره. للمدير على من يتبعه وللمسؤول على الجميع.
+ *  لا جدول جديد (جدول notes الموجود). لا يُذكَّر من رفع تقريره، ولا من ذُكِّر خلال ٤ ساعات، ولا من لم ينضم بعد. */
+const REMIND_GAP = 4 * 3600e3;
+route('POST', '/api/remind', async (ctx) => {
+  const { db, v, body } = ctx;
+  const set = await getSet(ctx);
+  const date = isDay(body.date) ? body.date : orgToday(set);
+  const ids = [...new Set(Array.isArray(body.members) ? body.members.filter((x) => typeof x === 'string' && x.length <= 64) : [])].slice(0, 200);
+  if (!ids.length) fail(400, 'invalid', 'اختر موظفًا واحدًا على الأقل.');
+  const js = JSON.stringify(ids); const t = now();
+  const [mq, rq, nq] = await db.batch([
+    db.prepare("SELECT id, status FROM members WHERE org_id = ? AND id IN (SELECT value FROM json_each(?))").bind(v.org_id, js),
+    db.prepare("SELECT member_id, status FROM reports WHERE org_id = ? AND date = ? AND member_id IN (SELECT value FROM json_each(?))").bind(v.org_id, date, js),
+    db.prepare("SELECT DISTINCT member_id FROM notes WHERE org_id = ? AND kind = 'remind' AND at > ? AND member_id IN (SELECT value FROM json_each(?))").bind(v.org_id, t - REMIND_GAP, js),
+  ]);
+  const done = new Set(rq.results.filter((r) => ['submitted', 'approved'].includes(r.status)).map((r) => r.member_id));
+  const recent = new Set(nq.results.map((r) => r.member_id));
+  const out = { sent: 0, done: 0, recent: 0, denied: 0 }; const rows = [];
+  for (const m of mq.results) {
+    if (!canReview(v, m.id) || m.status !== 'active') { out.denied++; continue; }
+    if (done.has(m.id)) { out.done++; continue; }
+    if (recent.has(m.id)) { out.recent++; continue; }
+    rows.push({ m: m.id, k: 'remind', o: m.id, t: '', x: `ذكّرك ${v.name} برفع تقرير ${date === orgToday(set) ? 'اليوم' : date}`, b: v.id });
+  }
+  out.denied += ids.length - mq.results.length;
+  if (rows.length) await db.batch([notesQ(db, v.org_id, rows), auditQ(db, v.org_id, v.id, 'report.remind', 'report', date, null, { date, count: rows.length })]);
+  out.sent = rows.length;
+  return out;
+});
+
+/** الالتزام برفع التقارير لكل فريق (إدارة): أسبوعيًا (٨ نوافذ × ٧ أيام) وشهريًا (٦ نوافذ × ٣٠ يومًا)، حتى أمس.
+ *  المتوقَّع = كل عضو فعّال × أيام العمل منذ انضمامه (يُستثنى العطلة والمشاهد نفسه). المرفوع = تقارير بحالة مرفوع/معتمد/مُعاد. */
+route('GET', '/api/compliance', async (ctx) => {
+  const { db, v } = ctx;
+  const set = await getSet(ctx);
+  const last = addDays(orgToday(set), -1); const WK = 8, MO = 6;
+  const start = addDays(last, -(MO * 30 - 1));
+  const { results: mem } = await db.prepare("SELECT id, department_id, created_at FROM members WHERE org_id = ? AND status = 'active'").bind(v.org_id).all();
+  const scope = mem.filter((m) => m.id !== v.id && canSee(v, m.id));
+  if (!scope.length) return { until: last, teams: [], all: { weekly: [], monthly: [] } };
+  const { results: reps } = await db.prepare("SELECT member_id, date FROM reports WHERE org_id = ? AND date BETWEEN ? AND ? AND status IN ('submitted','approved','returned') AND member_id IN (SELECT value FROM json_each(?))")
+    .bind(v.org_id, start, last, JSON.stringify(scope.map((m) => m.id))).all();
+  const got = new Set(reps.map((r) => `${r.member_id}|${r.date}`));
+  const days = []; for (let d = start; d <= last; d = addDays(d, 1)) if (!isOff(set, d)) days.push(d);
+  const joined = new Map(scope.map((m) => [m.id, localDay(set, m.created_at)]));
+  const win = (n, size) => Array.from({ length: n }, (_, i) => { const to = addDays(last, -(n - 1 - i) * size); return { from: addDays(to, -(size - 1)), to }; });
+  const calc = (ms, ws) => ws.map((w) => { let exp = 0, sub = 0;
+    for (const d of days) { if (d < w.from || d > w.to) continue; for (const m of ms) { if (joined.get(m.id) > d) continue; exp++; if (got.has(`${m.id}|${d}`)) sub++; } }
+    return { from: w.from, to: w.to, exp, sub, rate: exp ? Math.round((sub / exp) * 100) : null }; });
+  const W = win(WK, 7), Mo = win(MO, 30); const by = new Map();
+  for (const m of scope) { const k = m.department_id || ''; if (!by.has(k)) by.set(k, []); by.get(k).push(m); }
+  const { results: deps } = await db.prepare('SELECT id, name FROM departments WHERE org_id = ?').bind(v.org_id).all();
+  const nm = new Map(deps.map((d) => [d.id, d.name]));
+  return { until: last, teams: [...by.entries()].map(([k, ms]) => ({ id: k, name: nm.get(k) || 'بلا إدارة', n: ms.length, weekly: calc(ms, W), monthly: calc(ms, Mo) })).sort((a, b) => b.n - a.n),
+    all: { n: scope.length, weekly: calc(scope, W), monthly: calc(scope, Mo) } };
+});
+
 /** لوحة اليوم: حالة كل من يحق لي رؤيته. */
 route('GET', '/api/day', async ({ db, v, q }) => {
   const date = q.get('date');
@@ -1605,7 +1662,16 @@ route('GET', '/api/export.csv', async (ctx) => {
   const { db, v, q } = ctx;
   const set = await getSet(ctx);
   const { from, to } = rangeOf(q, set);
-  const type = q.get('type') === 'tasks' ? 'tasks' : 'people';
+  const type = ['tasks', 'reports'].includes(q.get('type')) ? q.get('type') : 'people';
+  if (type === 'reports') { // تقارير الفترة: صف لكل (موظف، يوم) لمن أراه؛ المسودات لا تُصدَّر
+    const { results } = await db.prepare(`SELECT m.id AS mid, m.name, d.name AS dep, r.date, r.status, r.late, COUNT(i.id) AS items, COALESCE(SUM(i.minutes), 0) AS minutes,
+        SUM(CASE WHEN i.state = 'blocked' THEN 1 ELSE 0 END) AS blocked
+      FROM reports r JOIN members m ON m.id = r.member_id LEFT JOIN departments d ON d.id = m.department_id LEFT JOIN report_items i ON i.report_id = r.id
+      WHERE r.org_id = ? AND r.date BETWEEN ? AND ? AND r.status != 'draft' GROUP BY r.id ORDER BY r.date, m.name LIMIT 20000`).bind(v.org_id, from, to).all();
+    const SS = { submitted: 'بانتظار المراجعة', approved: 'معتمد', returned: 'مُعاد للتعديل' };
+    const rows = [['الموظف', 'الإدارة', 'التاريخ', 'الحالة', 'متأخر', 'عدد البنود', 'الدقائق', 'بنود متعثرة']].concat(results.filter((r) => canSee(v, r.mid)).map((r) => [r.name, r.dep || '', r.date, SS[r.status] || r.status, r.late ? 'نعم' : 'لا', r.items, r.minutes, r.blocked || 0]));
+    return new Response(csv(rows), { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="itrack-reports-${from}_${to}.csv"`, 'cache-control': 'no-store' } });
+  }
   const M = await computeMetrics(ctx, from, to, q.get('member'));
   const { results: mem } = await db.prepare('SELECT m.id, m.name, d.name AS dep, s.name AS sec, p.title AS pos FROM members m LEFT JOIN departments d ON d.id = m.department_id LEFT JOIN sections s ON s.id = m.section_id LEFT JOIN positions p ON p.id = m.position_id WHERE m.org_id = ?').bind(v.org_id).all();
   const who = new Map(mem.map((m) => [m.id, m]));

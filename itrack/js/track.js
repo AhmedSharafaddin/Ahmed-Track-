@@ -64,7 +64,7 @@ async function download(path, name) {
 
 /* ═════════════ الإطار: ثلاث شاشات تحت «المتابعة» ═════════════ */
 export function tabs(cur) {
-  const t = [['board', '#/track', 'لوحة المتابعة'], ['tasks', '#/track/tasks', 'المهام'], ['projects', '#/track/p', 'المشاريع'], ['team', '#/team', 'التقارير اليومية']];
+  const t = [H.isV2() && ['today', '#/track/today', 'اليوم'], ['board', '#/track', 'لوحة المتابعة'], ['tasks', '#/track/tasks', 'المهام'], ['projects', '#/track/p', 'المشاريع'], ['team', '#/team', 'التقارير اليومية']].filter(Boolean);
   return `<nav class="tabs" aria-label="المتابعة">${t.map(([k, h, l]) => `<a href="${h}"${k === cur ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
 }
 export function vTrack(a, b, c) {
@@ -75,7 +75,7 @@ export function vTrack(a, b, c) {
   if (a === 'p') return b ? vProject(b) : vProjects();
   return vBoard();
 }
-const periodSeg = () => `<div class="seg" role="group" aria-label="الفترة">${[['7', '٧ أيام'], ['30', '٣٠ يومًا'], ['month', 'هذا الشهر']].map(([k, l]) => `<button data-act="tp" data-v="${k}" aria-pressed="${(H.S.tp || '30') === k}">${l}</button>`).join('')}</div>`;
+export const periodSeg = () => `<div class="seg" role="group" aria-label="الفترة">${[['7', '٧ أيام'], ['30', '٣٠ يومًا'], ['month', 'هذا الشهر']].map(([k, l]) => `<button data-act="tp" data-v="${k}" aria-pressed="${(H.S.tp || '30') === k}">${l}</button>`).join('')}</div>`;
 const assignBtn = () => `<a class="btn primary" href="#/track/new">${H.I('plus')}إسناد مهمة <kbd>N</kbd></a>`;
 
 /* ═════════════ لوحة المتابعة ═════════════ */
@@ -95,11 +95,12 @@ function vBoard() {
   const ontime = doneAll ? Math.round((sum((x) => x.assigned.ontime + x.duties.ontime) / doneAll) * 100) : null;
   const overdue = sum((x) => x.assigned.overdue); const blocked = sum((x) => x.blocked); const missed = sum((x) => x.duties.missed);
   const pend = ib && !ib.error ? (ib.team?.pending || []).length + ib.review.length : 0;
-  const kpi = (v, l, cls = '', h = '') => `<${h ? `a href="${h}"` : 'div'} class="kpi ${cls}"><b>${v}</b><span>${l}</span></${h ? 'a' : 'div'}>`;
+  const ontimeN = sum((x) => x.assigned.ontime + x.duties.ontime);
+  const kpi = (v, l, cls = '', h = '', sub = '') => `<${h ? `a href="${h}"` : 'div'} class="kpi ${cls}"><b>${v}</b><span>${l}</span>${sub && H.isV2() ? `<span class="ks">${sub}</span>` : ''}</${h ? 'a' : 'div'}>`;
   const kpis = `<div class="kpis k6">
-    ${kpi(`${ring(comp, 52)}`, 'الإنجاز', 'ringk')}${kpi(pct(ontime), 'في الموعد', tone(ontime))}
-    ${kpi(H.n(overdue), 'متأخرة الآن', overdue ? 'hot' : '', '#/track/tasks?st=late')}${kpi(H.n(blocked), 'متعثّرة', blocked ? 'hot' : '', '#/track/tasks?st=blocked')}
-    ${kpi(H.n(missed), 'واجبات فاتت', missed ? 'warnk' : '')}${kpi(H.n(pend), 'بانتظار قرارك', pend ? 'accentk' : '', '#/track/tasks?st=review')}</div>`;
+    ${kpi(`${ring(comp, 52)}`, 'الإنجاز', 'ringk', '', `${H.n(Math.min(dn, elig))} من ${H.n(elig)} مستحقة`)}${kpi(pct(ontime), 'في الموعد', tone(ontime), '', `${H.n(ontimeN)} من ${H.n(doneAll)} منجزة`)}
+    ${kpi(H.n(overdue), 'متأخرة الآن', overdue ? 'hot' : '', '#/track/tasks?st=late', overdue ? 'اضغط لعرضها' : 'لا متأخرات')}${kpi(H.n(blocked), 'متعثّرة', blocked ? 'hot' : '', '#/track/tasks?st=blocked', blocked ? 'اضغط لعرضها' : 'لا تعثّر')}
+    ${kpi(H.n(missed), 'واجبات فاتت', missed ? 'warnk' : '', '', 'من واجبات التوصيف')}${kpi(H.n(pend), 'بانتظار قرارك', pend ? 'accentk' : '', '#/track/tasks?st=review', 'تقارير ومهام')}</div>`;
   // قرارك: ما ينتظر اعتمادك (مهام وتقارير)
   const queue = ib && !ib.error ? [
     ...(ib.team?.pending || []).map((x) => ({ h: ref(x), m: who(x.member_id), t: x.title, s: 'مهمة منجزة', at: x.doneAt })),
@@ -125,7 +126,7 @@ function vBoard() {
   // الأحوج للتدخل
   const rows = [...ms].sort((a2, b2) => b2.score - a2.score || (a2.completion ?? 101) - (b2.completion ?? 101));
   const table = `<div class="card"><div class="row hrow"><h2 style="margin:0">${H.I('people')}الأحوج للتدخّل أولًا</h2>
-      <div class="row"><button class="btn sm" data-act="csv" data-v="people">${H.I('doc')}Excel: الموظفون</button><button class="btn sm" data-act="csv" data-v="tasks">${H.I('doc')}Excel: المهام</button></div></div>
+      <div class="row no-print"><button class="btn sm" data-act="csv" data-v="people">${H.I('doc')}Excel: الموظفون</button><button class="btn sm" data-act="csv" data-v="tasks">${H.I('doc')}Excel: المهام</button>${H.isV2() ? `<button class="btn sm" data-act="csv" data-v="reports">${H.I('doc')}Excel: التقارير</button><button class="btn sm" data-act="print">${H.I('doc')}PDF / طباعة</button>` : ''}</div></div>
     ${H.S.f.tdep ? `<p class="hint">مصفّى على: ${H.esc(H.depById(H.S.f.tdep)?.name || '')} · <button class="link" data-act="tdep" data-v="${H.esc(H.S.f.tdep)}">إلغاء</button></p>` : ''}
     <div class="tbl" role="table" aria-label="مؤشرات الموظفين"><div class="tr th" role="row"><span role="columnheader">الموظف</span><span role="columnheader">الإنجاز</span><span role="columnheader">في الموعد</span><span role="columnheader">متأخرة</span><span role="columnheader">واجبات فاتت</span><span role="columnheader">الحِمل</span><span role="columnheader">الحالة</span></div>
     ${rows.map((x) => { const m = who(x.member_id); if (!m) return ''; const pos = H.posById(m.position_id);
@@ -140,7 +141,41 @@ function vBoard() {
       <span class="why">${x.why.map((w) => `<em class="w-${w}">${WHY[w]}</em>`).join('')}${x.blocked ? `<small>${H.esc(x.blocked.slice(0, 60))}</small>` : ''}</span>${meter(x.prog, 'acc')}</a></li>`; }).join('')}</ul>` : '<div class="empty"><p>لا مخاطر ظاهرة الآن.</p></div>'}
     <p class="hint">تُكتشف بقواعد واضحة: فات الموعد، أو مضى نصف الوقت والإنجاز أقل منه بكثير، أو بقي يوم والإنجاز دون النصف، أو متعثّرة.</p></div>`;
   void A;
-  return `<div class="wrap">${head}${tabs('board')}${kpis}${qCard}${depCards}${table}<div class="grid2" style="margin-top:16px"><div class="stack">${rCard}</div><div class="stack">${vel}${kudos}</div></div></div>`;
+  return `<div class="wrap">${head}${tabs('board')}${kpis}${qCard}${depCards}${table}<div class="grid2" style="margin-top:16px"><div class="stack">${rCard}</div><div class="stack">${H.isV2() ? H.compCard() : ''}${vel}${kudos}</div></div></div>`;
+}
+
+/* ═════════════ «اليوم» للمدير: ما ينتظر قراري الآن ═════════════ */
+export function vToday() {
+  const t = H.today(); const me = H.S.boot.me;
+  const ib = H.inbox(); const st = H.teamState(t); const M = metrics();
+  const hr = new Date().getHours(); const first = String(me.name || '').trim().split(/\s+/)[0] || '';
+  const head = H.vh(`${hr < 12 ? 'صباح الخير' : 'مساء الخير'}${first ? `، ${H.esc(first)}` : ''}`, `${new Intl.DateTimeFormat('ar-u-nu-latn', { weekday: 'long', day: 'numeric', month: 'long' }).format(H.parse(t))}`, `<a class="btn primary" href="#/track/new">${H.I('plus')}إسناد مهمة <kbd>N</kbd></a>`);
+  if (!ib || !st.day || !M) return `<div class="wrap">${head}${tabs('today')}${H.loadingCard()}${H.loadingCard()}</div>`;
+  const err = [ib, st.day, M].find((x) => x.error);
+  if (err) return `<div class="wrap">${head}${tabs('today')}${H.errCard(err)}</div>`;
+  const reps = ib.review.filter((x) => who(x.member_id)); const tasksP = (ib.team?.pending || []).filter((x) => who(x.member_id));
+  const decisions = reps.length + tasksP.length;
+  const missing = st.list.filter((m) => ['none', 'draft'].includes(st.stOf(m)));
+  const blockedN = st.list.reduce((s2, m) => s2 + (st.rows.get(m.id)?.blocked || 0), 0);
+  const overdue = M.members.reduce((s2, x) => s2 + x.assigned.overdue, 0);
+  const hero = `<div class="tdy-hero"><h2>${decisions ? `${H.n(decisions)} ${decisions === 1 ? 'أمر ينتظر' : 'أمور تنتظر'} قرارك` : 'لا شيء ينتظر قرارك الآن'}</h2>
+    <p>${[missing.length ? `${H.n(missing.length)} لم يرفعوا تقرير اليوم بعد` : st.list.length ? 'رفع الجميع تقاريرهم اليوم' : '', blockedN ? `${H.n(blockedN)} بند متعثّر` : '', overdue ? `${H.n(overdue)} مهمة متأخرة` : ''].filter(Boolean).join(' · ') || 'كل شيء على المسار.'}</p></div>`;
+  const kp = (v, l, sub, cls, attrs) => `<${attrs.h ? `a href="${attrs.h}"` : `button type="button" data-act="goto-team" data-v="${attrs.v}"`} class="kpi ${cls}"><b>${v}</b><span>${l}</span><span class="ks">${sub}</span></${attrs.h ? 'a' : 'button'}>`;
+  const kpis = `<div class="kpis">${kp(H.n(decisions), 'بانتظار قرارك', 'تقارير ومهام منجزة', decisions ? 'accentk' : '', { v: 'submitted' })}
+    ${kp(`${H.n(missing.length)}<small style="font-size:1rem;color:var(--muted)"> من ${H.n(st.list.length)}</small>`, 'لم يرفعوا اليوم', missing.length ? 'اضغط لعرضهم وتذكيرهم' : 'اكتمل الرفع', missing.length ? 'warnk' : '', { v: 'missing' })}
+    ${kp(H.n(blockedN), 'بنود متعثّرة', blockedN ? 'تحتاج تدخّلك' : 'لا تعثّر', blockedN ? 'bad' : '', { v: 'blocked' })}
+    ${kp(H.n(overdue), 'مهام متأخرة', overdue ? 'اضغط لعرضها' : 'لا متأخرات', overdue ? 'bad' : '', { h: '#/track/tasks?st=late' })}</div>`;
+  const decCard = decisions ? `<div class="card queue"><h2>${H.I('hourglass')}قرارك الآن · ${H.n(decisions)}</h2><div class="people">
+      ${reps.slice(0, 8).map((x) => H.reportRow(who(x.member_id), x.date, { st: 'submitted', sub: `تقرير ${H.rel(x.date)}${x.submitted_at ? ` · رُفع ${H.fTime.format(new Date(x.submitted_at))}` : ''}`, dep: false, r: x.late ? { late: 1 } : null })).join('')}
+      ${tasksP.slice(0, 6).map((x) => `<a class="person" href="${ref(x)}">${H.avatar(who(x.member_id).name)}<div class="who"><b>${H.esc(x.title)}</b><small>${H.esc(who(x.member_id).name)} · مهمة منجزة تنتظر اعتمادك</small></div>${H.I('fwd')}</a>`).join('')}</div>
+      ${decisions > 14 || reps.length > 8 ? `<p class="hint" style="margin-top:8px"><a class="link" href="#/team">عرض كل التقارير</a> · <a class="link" href="#/track/tasks?st=review">كل المهام بانتظار الاعتماد</a></p>` : ''}</div>`
+    : `<div class="card"><div class="allclear">${H.I('check')}<b>لا شيء ينتظر قرارك</b><span class="hint">ستظهر هنا التقارير المرفوعة والمهام المنجزة فور وصولها.</span></div></div>`;
+  const rem = missing.filter((m) => m.status === 'active' && !H.S.rem.has(`${m.id}|${t}`));
+  const missCard = missing.length ? `<div class="card"><div class="row hrow"><h2 style="margin:0">${H.I('clock')}لم يرفعوا تقرير اليوم · ${H.n(missing.length)}</h2>${rem.length ? `<button class="btn sm" data-act="remind-all" data-d="${t}">${H.I('bell')}ذكّر الجميع</button>` : ''}</div>
+      <div class="people">${missing.slice(0, 8).map((m) => H.reportRow(m, t, { st: st.stOf(m), r: st.rows.get(m.id) })).join('')}</div>${missing.length > 8 ? `<p class="hint" style="margin-top:8px">و${H.n(missing.length - 8)} غيرهم. <button class="link" data-act="goto-team" data-v="missing">عرض الكل</button></p>` : ''}</div>` : '';
+  const risks = M.risks.slice(0, 5);
+  const riskCard = risks.length ? `<div class="card"><h2>${H.I('fire')}تحتاج تدخّلًا</h2><ul class="risks">${risks.map((x) => { const m = who(x.member_id); return `<li><a href="${ref(x)}">${prioDot(x.prio)}<span class="rt"><b>${H.esc(x.title)}</b><small>${H.esc(m?.name || '')} · ${dueTxt(x)}</small></span><span class="why">${x.why.map((w) => `<em class="w-${w}">${WHY[w]}</em>`).join('')}</span>${meter(x.prog, 'acc')}</a></li>`; }).join('')}</ul><p class="hint" style="margin-top:8px"><a class="link" href="#/track">كل المخاطر في لوحة المتابعة</a></p></div>` : '';
+  return `<div class="wrap">${head}${tabs('today')}${hero}${kpis}<div class="tdy-grid"><div class="stack">${decCard}${missCard}</div><div class="stack">${riskCard}${H.compCard()}</div></div></div>`;
 }
 
 /* ═════════════ موظف واحد ═════════════ */
@@ -478,7 +513,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement?.closest('form[data-form="assign"],form[data-form="tcomment"]')) { e.preventDefault(); document.activeElement.closest('form').requestSubmit(); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'n' || e.key === 'N' || e.code === 'KeyN') { if (H.hasTeam()) { e.preventDefault(); location.hash = '#/track/new'; } }
-  else if (e.key === '/') { const s = document.querySelector('[data-tq]'); if (s) { e.preventDefault(); s.focus(); } }
+  else if (e.key === '/') { const s = document.querySelector('[data-tq],[data-fq]'); if (s) { e.preventDefault(); s.focus(); } }
 });
 document.addEventListener('input', (e) => { if (e.target.id === 'pal-q') { pal.q = e.target.value; pal.i = 0; paintPal(); } });
 document.addEventListener('click', (e) => { if (e.target.closest('[data-pal]')) closePal(); });
@@ -487,6 +522,7 @@ document.addEventListener('click', (e) => { if (e.target.closest('[data-pal]')) 
 export function click(act, el) {
   const S = H.S;
   switch (act) {
+    case 'pal-open': pal.open = true; paintPal(); return true;
     case 'tp': S.tp = el.dataset.v; H.render(); return true;
     case 'tdep': S.f.tdep = S.f.tdep === el.dataset.v ? '' : el.dataset.v; H.render(); return true;
     case 'tst': S.tf.st = el.dataset.v; if (location.hash.includes('?')) history.replaceState(null, '', '#/track/tasks'); H.render(); return true;
@@ -620,7 +656,7 @@ export async function submit(form, fd, btn) {
 }
 
 /* ═════════════ للموظف: التنبيهات، التقويم، ملء التقرير من مهامي ═════════════ */
-const NOTE_IC = { assigned: 'plus', edited: 'doc', cancelled: 'x', done: 'check', blocked: 'fire', approved: 'check', returned: 'back', comment: 'note' };
+const NOTE_IC = { remind: 'bell', assigned: 'plus', edited: 'doc', cancelled: 'x', done: 'check', blocked: 'fire', approved: 'check', returned: 'back', comment: 'note' };
 export function notesCard() {
   const ib = H.inbox();
   if (!ib || ib.error) return '';
@@ -630,7 +666,7 @@ export function notesCard() {
   const AL = { overdue: (a) => `فات موعد «${H.esc(a.title)}» (${H.rel(a.due)})`, soon: (a) => `«${H.esc(a.title)}» موعدها ${H.rel(a.due)}`, returned: (a) => `أُعيدت لك «${H.esc(a.title)}»${a.note ? `: ${H.esc(a.note.slice(0, 60))}` : ''}` };
   return `<div class="card notes"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${H.I('bell')}تنبيهاتك${unread.length ? ` · ${H.n(unread.length)}` : ''}</h2>${unread.length ? '<button class="btn sm" data-act="notes-read">تعليم الكل كمقروء</button>' : ''}</div>
     <ul class="nlist">${alerts.slice(0, 5).map((a) => `<li class="al-${a.kind}"><a href="my/">${H.I(a.kind === 'overdue' ? 'fire' : a.kind === 'returned' ? 'back' : 'clock')}<span>${AL[a.kind]?.(a) || ''}</span></a></li>`).join('')}
-    ${unread.map((x) => { const h = x.task_id && x.owner_id && x.owner_id !== H.S.boot.me.id ? `#/track/t/${encodeURIComponent(x.owner_id)}/${encodeURIComponent(x.task_id)}` : 'my/';
+    ${unread.map((x) => { const h = x.kind === 'remind' ? '#/day' : x.task_id && x.owner_id && x.owner_id !== H.S.boot.me.id ? `#/track/t/${encodeURIComponent(x.owner_id)}/${encodeURIComponent(x.task_id)}` : 'my/';
       return `<li><a href="${h}">${H.I(NOTE_IC[x.kind] || 'bell')}<span>${H.esc(x.text)}<small>${H.fTime.format(new Date(x.at))}</small></span></a></li>`; }).join('')}</ul></div>`;
 }
 export function icsCard() {
