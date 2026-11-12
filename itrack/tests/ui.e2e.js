@@ -223,6 +223,9 @@ const SCREENS = [['#/track/today', '.tdy-hero'], ['#/track', '.kpis.k6'], ['#/te
   await go(e, '#/day', '.vh'); await axe(e, 'employee day dark'); ok('min font employee', (await minFont(e)).length === 0, await minFont(e));
   await go(e, '#/settings', '.card'); await axe(e, 'employee settings dark');
   const em = await open(b, 'e1@ui.test', { width: 390, height: 844 }, O); await go(em, '#/day', '.vh'); ok('employee mobile no overflow', (await overflow(em)) <= 0); await axe(em, 'employee day mobile light');
+  const ed = await open(b, 'e3@ui.test', { width: 390, height: 844 }, O); await go(ed, '#/day', '.items');
+  ok('employee mobile draft editor: no overflow (long JD option, blocked item)', (await overflow(ed)) <= 0 && (await ed.evaluate(() => [...document.querySelectorAll('.item')].every((it) => [...it.querySelectorAll('.body *')].filter((c) => c.getBoundingClientRect().width > 0).every((c) => c.getBoundingClientRect().right <= it.getBoundingClientRect().right + 1 && c.getBoundingClientRect().left >= it.getBoundingClientRect().left - 1)))), await overflow(ed));
+  await axe(ed, 'employee draft editor mobile');
   ok('no JS errors (employee)', e.errs.length === 0 && em.errs.length === 0, [e.errs, em.errs]);
 
   /* ═════════ ٦) جهة فارغة (لا أعضاء) ═════════ */

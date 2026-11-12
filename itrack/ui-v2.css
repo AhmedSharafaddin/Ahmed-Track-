@@ -178,6 +178,10 @@ html[data-ui="v2"] .rk.med { background: var(--warn-soft); color: var(--warn); }
 html[data-ui="v2"] .rk.ok { background: var(--ok-soft); color: var(--ok); }
 html[data-ui="v2"] .item.st-blocked { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: var(--bad-soft); }
 html[data-ui="v2"] .item { border-radius: var(--r-md); background: var(--surface-2); }
+/* محرّر البند على الجوال: عمود المحتوى لا يتمدد بعرض أطول خيار في القائمة (كان يدفع البند خارج البطاقة) */
+html[data-ui="v2"] .item .body { grid-template-columns: minmax(0, 1fr); }
+html[data-ui="v2"] .item .meta > * { min-width: 0; }
+html[data-ui="v2"] .item .meta select.in { text-overflow: ellipsis; }
 html[data-ui="v2"] .composer, html[data-ui="v2"] .empty { border-color: var(--line-2); border-radius: var(--r-md); }
 html[data-ui="v2"] .jd li.cold { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 html[data-ui="v2"] .jd .cnt { background: var(--accent-soft); color: var(--accent-ink); }
