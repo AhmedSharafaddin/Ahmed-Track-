@@ -284,6 +284,7 @@ export function vBalance(h) {
     </section>
     <section class="panel"><p class="lbl">قيّم رضاك <span class="cnt">${n(ratedN)} من ${n(d.rows.length)}</span></p>
       <div class="bal-rows">${d.rows.map(rateRow).join('')}</div>
+      ${h.missing?.length && d.rows.length < 6 ? `<p class="note">الاتزان يُقاس بين مجالات حياتك كلها. <button class="link" data-act="life-areas">أضف الناقص: ${h.missing.map((L) => L.name).join('، ')}</button></p>` : ''}
       <p class="note">الجهد = المهام المنجزة + جلسات التركيز (كل ٢٥ دقيقة وحدة) في آخر ${n(WINDOW)} يومًا، منسوبًا لأعلى مجال.</p>
     </section>
   </div>
@@ -302,7 +303,10 @@ export function vBalance(h) {
     <section class="panel"><p class="lbl">${I('sun', 'd')}إيقاع يومك</p>
       <div class="prow static"><span>طاقتك اليوم<small>تسجيلها يكشف كم تنجز فعلًا في كل حالة</small></span>
         <div class="seg sm" role="group" aria-label="طاقتك اليوم">${[[1, 'منخفضة'], [2, 'عادية'], [3, 'عالية']].map(([v, l]) => `<button class="${en === v ? 'on' : ''}" aria-pressed="${en === v}" data-act="bal-energy" data-v="${v}">${l}</button>`).join('')}</div></div>
-      <button class="prow" data-act="min-day">${I('moon', 'i')}<span>${min ? 'اليوم «حدّ أدنى»: مفعّل' : 'يوم صعب؟ اجعله «حدًّا أدنى»'}<small>${min ? 'أولوية واحدة تكفي اليوم وتحفظ سلسلتك. اضغط للعودة ليوم عادي.' : 'أولوية واحدة فقط تكفي وتحفظ سلسلتك. الأيام الصعبة تُدار ولا تُلغى.'}</small></span></button>
+      <button class="prow" data-act="min-day">${I('hand', 'i')}<span>${min ? 'اليوم «حدّ أدنى»: مفعّل' : 'يوم صعب؟ اجعله «حدًّا أدنى»'}<small>${min ? 'أولوية واحدة تكفي اليوم وتحفظ سلسلتك. اضغط للعودة ليوم عادي.' : 'أولوية واحدة فقط تكفي وتحفظ سلسلتك. الأيام الصعبة تُدار ولا تُلغى.'}</small></span></button>
+      <button class="prow" data-act="rit-start">${I('sun', 'i')}<span>بداية اليوم<small>تفريغ الرأس، حتى ثلاث أولويات، أول خطوة، وإذا/فإن</small></span></button>
+      <button class="prow" data-act="rit-end">${I('moon', 'i')}<span>ختم اليوم<small>المزاج، تحسين واحد للغد، وقرار لكل ما لم يُنجز</small></span></button>
+      <button class="prow" data-act="library">${I('sparkle', 'i')}<span>مكتبة المهام<small>مهام صغيرة مجرَّبة لمجالات الحياة الخمسة</small></span></button>
       <a class="prow" href="#/review">${I('note', 'i')}<span>المراجعة الأسبوعية<small>ما أنجزته، ما عطّلك، وأهم ثلاثة للأسبوع القادم</small></span></a>
     </section>
   </div>`;

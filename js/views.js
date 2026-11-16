@@ -17,6 +17,7 @@ import { notify } from './notify.js';
 import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
 import { vBalance, balanceAlert, wheelDue, isMinDay } from './balance.js';
+import { todayExtras, resultsPanel, missingLife } from './ritual.js';
 import { wk, isWork, FREQ_AR, aiOn } from './work.js';
 
 export const ui = {
@@ -203,6 +204,7 @@ function vToday() {
       </div>
     </section>
     ${nudge}
+    ${todayExtras(I)}
     ${load.over && !minDay ? `<p class="warn">${I('scales', 'd')}يومك أثقل من طاقتك بـ${fmtMin(load.minutes - load.cap)}. نقل مهمة إلى الغد أو إسنادها قد يساعدك.</p>` : ''}
     <section class="today-priorities" aria-labelledby="priorities-title">
       <div class="today-section-head">
@@ -341,6 +343,7 @@ function vReview() {
   </div>
   ${isCur && todo.length ? `<section class="blk"><p class="lbl">رتّب قبل أن تبدأ أسبوعك</p><ul class="todo">${todo.join('')}</ul></section>` : ''}
   ${slipped.length ? `<section class="blk"><p class="lbl">تتكرر في الترحيل والتأجيل <span class="cnt">قرّر: صغّرها، أسندها، أو احذفها</span></p>${rows(slipped)}</section>` : ''}
+  ${isCur ? resultsPanel(I) : ''}
   <form class="panel reflect" data-form="review" data-week="${wk}">
     <label><span>ما الذي أنجزته وأفخر به؟</span><textarea name="wins" data-draft="rv-${wk}-wins" rows="2">${val('wins')}</textarea></label>
     <label><span>ما الذي عطّلني أو شتّتني؟</span><textarea name="blockers" data-draft="rv-${wk}-blockers" rows="2">${val('blockers')}</textarea></label>
@@ -368,6 +371,7 @@ export function navItems() {
     smart: Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)).join(''),
     views: [
       item('#/balance', I('scales', 'd'), 'الاتزان', 0), item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'هرم الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
+      `<button type="button" class="ni" data-act="library">${I('sparkle', 'd')}<span>مكتبة المهام</span></button>`,
     ].join(''),
     lists: areas().map((a) => {
       const late = c[`late:${a.id}`] || 0;
@@ -540,7 +544,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: () => vPyramid({ I, vh, ui }), review: vReview,
-  dashboard: () => vDash({ I, areaMark, row, vh }), balance: () => vBalance({ I, areaMark, vh, ui }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), balance: () => vBalance({ I, areaMark, vh, ui, missing: missingLife() }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */

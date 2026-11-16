@@ -11,3 +11,5 @@ BASE=http://localhost:8790 node tests/pyr_axe.js dark   # axe (WCAG AA) على �
 BASE=http://localhost:8790 node tests/micperf.js    # موضع زر الصوت وزمن فتح مهمة مع ٤٠٠ مهمة
 ```
 متغيّر `CHROME=/path/to/chromium` اختياري. الاختبارات تعمل بوضع التخزين المحلي (بلا Firebase). مسار الصوت الكامل يحتاج Firebase وهميًا وخادم ذكاء وهميًا ولم يُحفظ هنا.
+BASE=http://localhost:8790 node tests/balance.js    # الاتزان: العجلة، الرؤى، «عالق؟»، الحد الأدنى، جوال، axe (٢٩)
+BASE=http://localhost:8790 node tests/ritual.js     # بداية اليوم، ختم اليوم، نتائج الأسبوع، المكتبة (بساعة مزيفة، ٢٤)

@@ -1,0 +1,85 @@
+const {chromium}=require('playwright');
+let pass=0,fail=0;const ok=(n,c,x)=>{if(c){pass++;console.log('PASS',n)}else{fail++;console.log('FAIL',n,x===undefined?'':JSON.stringify(x))}};
+const BASE=process.env.BASE||'http://localhost:8790';
+(async()=>{
+ const b=await chromium.launch();
+ const ctx=await b.newContext({viewport:{width:1440,height:900}});
+ // ساعة ثابتة: ٩ صباحًا لاختبار «بداية اليوم»
+ const p=await ctx.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+ await p.clock.install({time:new Date(new Date().toDateString()+' 09:00:00')});
+ await p.goto(BASE+'/');await p.evaluate(()=>localStorage.clear());await p.reload();await p.waitForTimeout(600);
+ const D=()=>p.evaluate(()=>JSON.parse(localStorage.getItem('cc:data:v1')));
+ const fl=async()=>{await p.clock.runFor(400);await p.waitForTimeout(150)};
+ const tk=()=>p.evaluate(()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`});
+ await p.evaluate(()=>{const d=JSON.parse(localStorage.getItem('cc:data:v1'));const A=d.areas;const now=new Date().toISOString();
+  const mk=(i,o)=>({id:'t'+i,title:'مهمة '+i,notes:'',areaId:A[0].id,goalId:null,urgent:false,important:true,due:null,status:'todo',focusDate:null,focusOrder:0,slips:0,completedAt:null,steps:[],repeat:null,assignee:null,snoozes:0,createdAt:now,updatedAt:now,...o});
+  for(let i=0;i<5;i++)d.tasks.push(mk(i,{}));localStorage.setItem('cc:data:v1',JSON.stringify(d));});
+ await p.reload();await fl();
+ ok('morning button on today',await p.isVisible('.rit-call[data-act="rit-start"]'));
+ await p.click('.rit-call[data-act="rit-start"]');await fl();
+ ok('start sheet has candidates',(await p.$$('form[data-form="rit-start"] [name=pick]')).length>=3);
+ await p.fill('[name=dump]','اتصل بالمورد\nفكرة عرض جديد');
+ const picks=await p.$$('form[data-form="rit-start"] [name=pick]');for(let i=0;i<4;i++)await picks[i].check();
+ await p.fill('form[data-form="rit-start"] [name=step]','أفتح الملف');
+ await p.check('[name=when][value=later]',{force:true});await p.check('[name=obstacle][value=phone]',{force:true});
+ await p.click('form[data-form="rit-start"] [type=submit]');await fl();
+ let d=await D();const T=await tk();
+ const foc=d.tasks.filter(t=>t.focusDate===T).sort((a,b)=>a.focusOrder-b.focusOrder);
+ ok('max 3 priorities set',foc.length===3,foc.length);
+ ok('dump went to inbox',d.tasks.filter(t=>!t.areaId&&/المورد|عرض جديد/.test(t.title)).length===2);
+ ok('first step + if-then on first',foc[0].steps[0]?.title==='أفتح الملف'&&/^إذا أمسكتُ هاتفي فإنني/.test(foc[0].intent||''),foc[0]);
+ const wk=d.reviews.find(r=>r.days);ok('day record saved',wk&&wk.days[T]?.startAt&&wk.days[T].obstacle==='phone',wk?.days);
+ ok('morning button gone after ritual',!(await p.isVisible('.rit-call[data-act="rit-start"]')));
+ // نتائج الأسبوع
+ await p.goto(BASE+'/#/review');await fl();
+ await p.fill('form[data-form=results] [name=r0]','إرسال عرض العميل');await p.fill('form[data-form=results] [name=r1]','إغلاق جرد المخزن');
+ await p.click('form[data-form=results] [type=submit]');await fl();
+ await p.goto(BASE+'/#/today');await fl();
+ ok('week results on today',(await p.$$('[data-act="result-toggle"]')).length===2);
+ await p.click('[data-act="result-toggle"]');await fl();d=await D();
+ ok('result toggled',d.reviews.find(r=>r.results).results[0].done===true);
+ // المكتبة
+ await p.click('#nav [data-act="library"]');await fl();
+ ok('library has 5 categories',(await p.$$('.lib-cat')).length===5);
+ await p.check('.lib-cat[open] [name=pick] >> nth=0');
+ await p.click('.lib-cat:nth-of-type(4) summary');await p.check('.lib-cat:nth-of-type(4) [name=pick] >> nth=1');
+ await p.check('[name=mode][value=daily]',{force:true});
+ const nAreas=(await D()).areas.length;
+ await p.click('form[data-form=library] [type=submit]');await fl();d=await D();
+ const deen=d.areas.find(a=>a.name==='ديني'), health=d.areas.find(a=>a.name==='صحي');
+ ok('missing life areas created',deen&&health&&d.areas.length===nAreas+2,d.areas.map(a=>a.name));
+ const lt=d.tasks.filter(t=>t.repeat==='daily');
+ ok('library tasks daily in right areas',lt.length===2&&lt.some(t=>t.areaId===deen.id)&&lt.some(t=>t.areaId===health.id),lt);
+ await p.goto(BASE+'/#/balance');await fl();
+ ok('life-areas offer lists remaining',(await p.textContent('[data-act="life-areas"]')).includes('علاقات'));
+ await p.click('[data-act="life-areas"]');await fl();d=await D();
+ ok('remaining life areas added',d.areas.some(a=>a.name==='علاقات'));
+ // ختم اليوم: ٩ مساءً
+ await p.clock.setFixedTime(new Date(new Date().toDateString()+' 21:00:00'));await p.goto(BASE+'/#/today');await p.reload();await p.waitForTimeout(600);
+ ok('evening button on today',await p.isVisible('.rit-call[data-act="rit-end"]'));
+ await p.click('.rit-call[data-act="rit-end"]');await p.waitForTimeout(300);
+ const sels=await p.$$('form[data-form="rit-end"] select');ok('leftovers listed',sels.length>=3,sels.length);
+ await sels[1].selectOption('keep');await sels[2].selectOption('del');
+ await p.check('[name=mood][value="4"]',{force:true});await p.fill('[name=improve]','أبدأ قبل فتح البريد');
+ const before=(await D()).tasks.length;
+ await p.click('form[data-form="rit-end"] [type=submit]');await p.waitForTimeout(500);d=await D();
+ const rec=d.reviews.find(r=>r.days&&r.days[T]).days[T];
+ ok('evening saved',rec.endAt&&rec.mood===4&&rec.improve==='أبدأ قبل فتح البريد',rec);
+ ok('one deleted, focus cleared',d.tasks.length===before-1&&d.tasks.filter(t=>t.focusDate===T&&t.status!=='done').length===0);
+ ok('one moved to tomorrow with slip',d.tasks.some(t=>t.due>T&&t.slips===1));
+ // الغد: تحسين اليوم يظهر
+ await p.clock.setFixedTime(new Date(Date.now()+0));
+ const tom=new Date(new Date().toDateString()+' 09:00:00');tom.setDate(tom.getDate()+1);
+ await p.clock.setFixedTime(tom);await p.reload();await p.waitForTimeout(600);
+ ok('improve shown next morning',(await p.textContent('[data-act="improve-toggle"]')||'').includes('أبدأ قبل فتح البريد'));
+ await p.click('[data-act="improve-toggle"]');await p.waitForTimeout(300);
+ ok('improve marked done',await p.isVisible('.rit-imp.done'));
+ await p.click('.rit-call[data-act="rit-start"]');await p.waitForTimeout(300);await p.screenshot({path:'/tmp/rit-start.png'});
+ await p.click('[data-act="close"]');
+ await p.setViewportSize({width:375,height:760});await p.waitForTimeout(200);
+ await p.click('.rit-call[data-act="rit-start"]');await p.waitForTimeout(300);
+ const ov=await p.evaluate(()=>{const d=document.querySelector('#dlg');return d.scrollWidth-d.clientWidth});ok('sheet fits mobile',ov<=1,ov);
+ try{const axe=require('axe-core');await p.addScriptTag({content:axe.source});const r=await p.evaluate(()=>axe.run(document.querySelector('#dlg'),{runOnly:['wcag2a','wcag2aa']}));ok('axe AA start sheet',r.violations.length===0,r.violations.map(v=>[v.id,v.nodes.slice(0,2).map(n=>n.target.join(' '))]));}catch(e){console.log('SKIP axe',e.message.slice(0,80))}
+ ok('no page errors',errs.length===0,errs.slice(0,4));
+ console.log(`\n${pass} passed, ${fail} failed`);await b.close();process.exit(fail?1:0);
+})();

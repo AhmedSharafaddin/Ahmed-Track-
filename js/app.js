@@ -7,11 +7,12 @@ import { uid, todayKey, keyAdd, n, esc, fmtTime, relDay, isDateKey } from './uti
 import {
   S, areas, areaById, goalById, taskById, isOpen, createTask, updateTask, toggleTask, focusPatch, FULL_MSG,
   rollover, followedUp, parseQuick, convertSetupFile, settings, saveSettings, snooze, dayLoads,
-  setWaiting, values, saveValues, goalLevel, MAX_VALUES, MAX_LONG,
+  setWaiting, values, saveValues, goalLevel, MAX_VALUES, MAX_LONG, MAX_FOCUS,
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
 import { rate, setEnergy, toggleMinDay, isMinDay, logStuck, stuckSheet, STUCK } from './balance.js';
+import { startSheet, endSheet, librarySheet, leftovers, saveDay, dayRec, intentOf, saveResults, toggleResult, LIFE_AREAS, LIBRARY, areaFor, missingLife } from './ritual.js';
 import { isWork, hydrate, onWork, uploadPhoto, postComment, aiSteps, syncSoon } from './work.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -180,6 +181,24 @@ function handlePendingTask() {
 }
 
 /* ═════════════ الحوارات ═════════════ */
+function openSheet(html) {
+  dlg.classList.remove('commit-dlg');
+  dlg.innerHTML = html;
+  if (!dlg.open) dlg.showModal();
+  dlg.scrollTop = 0;
+}
+/** ينشئ مجالات الحياة الناقصة من القائمة ويعيد خريطة مفتاح ← معرّف المجال. */
+function addLifeAreas(keys) {
+  const made = new Map();
+  let order = Math.max(0, ...S().areas.map((a) => a.order || 0));
+  for (const L of LIFE_AREAS) {
+    if (!keys.includes(L.key) || areaFor(L.key)) continue;
+    const id = uid();
+    store.put('areas', { id, name: L.name, color: L.color, emoji: L.emoji, order: ++order });
+    made.set(L.key, id);
+  }
+  return made;
+}
 function openCapture(ctx = {}, title = 'مهمة جديدة') {
   dlg.classList.remove('commit-dlg');
   delete ui.drafts['qa-d'];
@@ -459,6 +478,13 @@ document.addEventListener('click', (e) => {
     }
     case 'start-focus': startFocus(id); break;
     case 'pomo-start': startFocus(id, true); break;
+    /* ── حلقة اليوم والمكتبة ── */
+    case 'rit-start': openSheet(startSheet(I)); break;
+    case 'rit-end': openSheet(endSheet(I)); break;
+    case 'library': openSheet(librarySheet(I, el.dataset.k || 'deen')); break;
+    case 'improve-toggle': saveDay({ improveDone: dayRec().improveDone === el.dataset.k ? null : el.dataset.k }); break;
+    case 'result-toggle': toggleResult(el.dataset.id); break;
+    case 'life-areas': { const made = addLifeAreas(missingLife().map((L) => L.key)); toast(made.size ? `أُضيفت ${n(made.size)} مجالات. قيّم رضاك عنها الآن.` : 'مجالات الحياة مكتملة.'); break; }
     /* ── الاتزان ── */
     case 'bal-rate': rate(el.dataset.id, el.dataset.v); break;
     case 'bal-energy': setEnergy(el.dataset.v); break;
@@ -727,6 +753,63 @@ document.addEventListener('submit', (e) => {
       toast('حُفظت قيمك.');
       break;
     }
+    case 'rit-start': {
+      get('dump').split(/\n+/).map((s) => s.trim()).filter(Boolean).slice(0, 20).forEach((title) => createTask({ title: title.slice(0, 300) }));
+      let ids = fd.getAll('pick').map(String).filter((id) => { const t = taskById(id); return t && isOpen(t); });
+      const nt = get('newtask');
+      if (nt) { const id = uid(); createTask({ id, title: nt, due: todayKey() }); ids.push(id); }
+      if (!ids.length) return toast('اختر أولوية واحدة على الأقل، أو اكتب مهمة جديدة.');
+      const extra = ids.length - MAX_FOCUS;
+      ids = ids.slice(0, MAX_FOCUS);
+      const today = todayKey();
+      for (const t of S().tasks) if (t.focusDate === today && isOpen(t) && !ids.includes(t.id)) updateTask(t.id, { focusDate: null });
+      const base = Date.now();
+      const step = get('step'); const ob = get('obstacle'); const when = get('when') || 'now';
+      ids.forEach((id, i) => {
+        const t = taskById(id);
+        const patch = { focusDate: today, focusOrder: base + i };
+        if (i === 0) {
+          if (step && !(t?.steps || []).some((s) => s.title === step)) patch.steps = [{ id: uid(), title: step, done: false }, ...(t?.steps || [])];
+          if (intentOf(ob)) patch.intent = intentOf(ob);
+        }
+        updateTask(id, patch);
+      });
+      saveDay({ startAt: Date.now(), when, obstacle: ob || null });
+      dlg.close();
+      if (when === 'now') startFocus(ids[0], true);
+      else toast(extra > 0 ? `اعتُمدت أول ${n(MAX_FOCUS)} فقط. ثلاث أولويات تكفي.` : 'خطتك جاهزة. ابدأ بالأولى.');
+      break;
+    }
+    case 'rit-end': {
+      const tomorrow = keyAdd(todayKey(), 1);
+      let moved = 0; let removed = 0;
+      for (const t of leftovers().slice(0, 10)) {
+        const v = get(`t-${t.id}`);
+        if (v === 'del') { store.remove('tasks', t.id); removed++; }
+        else if (v === 'keep') updateTask(t.id, { due: null, focusDate: null });
+        else if (v === 'tomorrow') { updateTask(t.id, { due: tomorrow, focusDate: null, slips: (t.slips || 0) + 1 }); moved++; }
+      }
+      const mood = Number(get('mood')) || null;
+      saveDay({ endAt: Date.now(), mood, good: get('good'), drain: get('drain'), improve: get('improve') });
+      dlg.close();
+      toast(['خُتم اليوم.', moved ? `${n(moved)} إلى الغد.` : '', removed ? `${n(removed)} حُذفت.` : '', get('improve') ? 'تحسين الغد ينتظرك صباحًا.' : ''].filter(Boolean).join(' '));
+      break;
+    }
+    case 'library': {
+      const picks = fd.getAll('pick').map(String).map((v) => { const i = v.indexOf('|'); return [v.slice(0, i), v.slice(i + 1)]; }).filter(([k, s]) => LIBRARY[k]?.includes(s));
+      if (!picks.length) return toast('اختر مهمة واحدة على الأقل.');
+      if (picks.length > 12) return toast('اختر ١٢ على الأكثر. القائمة الطويلة تُضعف الالتزام.');
+      const mode = get('mode') || 'today';
+      const made = addLifeAreas([...new Set(picks.map(([k]) => k))]);
+      for (const [k, title] of picks) {
+        const areaId = made.get(k) || areaFor(k)?.id || null;
+        createTask({ title, areaId, due: mode === 'none' ? null : todayKey(), repeat: mode === 'daily' ? 'daily' : null, est: 15 });
+      }
+      dlg.close();
+      toast(`أُضيفت ${n(picks.length)} ${picks.length > 10 ? 'مهمة' : 'مهام'}${mode === 'daily' ? ' تتكرر كل يوم' : mode === 'today' ? ' لليوم' : ' بلا موعد'}${made.size ? `، وأُنشئ ${n(made.size)} مجال` : ''}.`);
+      break;
+    }
+    case 'results': saveResults([get('r0'), get('r1'), get('r2')]); toast('حُفظت نتائج الأسبوع. تظهر أعلى يومك.'); break;
     case 'bal-step': {
       const title = get('title');
       const area = areaById(form.dataset.area);

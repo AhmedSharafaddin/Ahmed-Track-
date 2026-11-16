@@ -1467,3 +1467,56 @@ button.today-hero-secondary { font: inherit; cursor: pointer; }
   .wheel .wl { font-size: 13.5px; }
 }
 a.prow { text-decoration: none; color: inherit; }
+
+/* ═════════════ حلقة اليوم والمكتبة (cc-v26): بداية اليوم، ختم اليوم، نتائج الأسبوع، مكتبة المهام ═════════════ */
+.rit { display: grid; gap: 14px; }
+.rit .cap-h h2 { display: flex; align-items: center; gap: 8px; }
+.rit .cap-h h2 .ic { color: var(--gold); }
+.rit fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
+.rit legend { padding: 0; margin-bottom: 8px; font-weight: 600; font-size: .93rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rit legend b { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: .78rem; }
+.rit legend small { font-weight: 400; color: var(--muted); font-size: .8rem; }
+.rit .in { width: 100%; font: inherit; }
+.rit-list { display: grid; gap: 2px; max-height: 232px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
+.rit-pick { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 10px; border-radius: 9px; cursor: pointer; font-size: .92rem; }
+.rit-pick:hover { background: var(--hover); }
+.rit-pick:has(input:checked) { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.rit-pick input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.rit-pick span { flex: 1; display: flex; justify-content: space-between; gap: 8px; }
+.rit-pick small { color: var(--muted); font-weight: 400; font-size: .78rem; white-space: nowrap; }
+.rit-pick.off { color: var(--muted); cursor: default; }
+.rit-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rit-chips label { cursor: pointer; }
+.rit-chips input { position: absolute; opacity: 0; pointer-events: none; }
+.rit-chips span { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: .86rem; }
+.rit-chips input:checked + span { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.rit-chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rit-chips.mood i { font-style: normal; font-size: 1.15rem; }
+.rit-f { display: grid; gap: 6px; font-size: .9rem; color: var(--ink-2); }
+.rit-left { display: grid; gap: 6px; }
+.rit-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.rit-row:last-child { border-bottom: 0; }
+.rit-row > span { flex: 1; min-width: 0; font-size: .92rem; display: grid; }
+.rit-row small.late { color: var(--danger); font-size: .76rem; }
+.rit-row select.in { width: auto; max-width: 9rem; flex: none; }
+.lib-cat { border: 1px solid var(--line); border-radius: 13px; padding: 0 10px; }
+.lib-cat summary { display: flex; align-items: center; gap: 9px; min-height: 50px; cursor: pointer; list-style: none; }
+.lib-cat summary::-webkit-details-marker { display: none; }
+.lib-cat summary i { font-style: normal; font-size: 1.2rem; }
+.lib-cat summary small { color: var(--muted); font-size: .78rem; margin-inline-start: auto; text-align: end; }
+.lib-cat[open] { padding-bottom: 10px; }
+.lib-cat .rit-list { max-height: 260px; }
+.rit-imp { width: 100%; display: flex; align-items: center; gap: 12px; text-align: start; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 11px 14px; margin: 0 0 8px; cursor: pointer; }
+.rit-imp:hover { border-color: var(--accent); }
+.rit-imp > span:last-child { display: grid; font-weight: 500; font-size: .95rem; min-width: 0; overflow-wrap: anywhere; }
+.rit-imp small { color: var(--muted); font-weight: 400; font-size: .76rem; }
+.rit-imp .ck { flex: none; pointer-events: none; }
+.rit-imp.done > span:last-child { color: var(--muted); text-decoration: line-through; }
+.rit-imp.done .ck::before { background: var(--accent); border-color: var(--accent); }
+.rit-imp.done .ck .ic { opacity: 1; color: var(--on-accent); }
+.rit-res { margin: 4px 0 14px; }
+.rit-res .lbl { margin-bottom: 8px; }
+.rit-results { margin-bottom: 12px; }
+button.ni { background: none; border: 0; font: inherit; width: 100%; text-align: start; cursor: pointer; }
+.rit-call { border-color: color-mix(in srgb, var(--gold) 45%, transparent); background: var(--gold-soft); }
+.rit-call > .ic { width: 22px; height: 22px; color: var(--gold); flex: none; }

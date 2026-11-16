@@ -14,7 +14,7 @@ const VERSION = 'cc-v26';
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/model.js', './js/views.js', './js/store.js', './js/utils.js', './js/config.js',
-  './js/picker.js', './js/notify.js', './js/dash.js', './js/tasks.js', './js/ai.js', './js/pyramid.js', './js/work.js', './js/balance.js',
+  './js/picker.js', './js/notify.js', './js/dash.js', './js/tasks.js', './js/ai.js', './js/pyramid.js', './js/work.js', './js/balance.js', './js/ritual.js',
   './fonts/readex-ar.woff2', './fonts/readex-latin.woff2',
   './icons/icon.svg', './icons/icon-192.png', './icons/apple-touch-icon.png', './icons/badge-96.png',
 ];
