@@ -1403,3 +1403,67 @@ li.t.work { box-shadow: inset -3px 0 0 var(--accent); }
 .ai-steps { display: inline-flex; gap: 6px; align-items: center; margin: 6px 4px 2px; font-size: .88rem; }
 .ptitle[readonly] { cursor: default; }
 @media (prefers-reduced-motion: reduce) { .ph-ld { animation: none; } }
+
+/* ═════════════ الاتزان (cc-v26): عجلة الرضا مقابل الجهد، الرؤى، «عالق؟»، الحد الأدنى. تُحذف الكتلة للرجوع. ═════════════ */
+.bal-hero .db-big > b small { font-size: 1.4rem; color: var(--muted); font-weight: 500; }
+.bal-grid { display: grid; gap: 14px; margin-top: 14px; }
+@media (min-width: 900px) { .bal-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; } }
+.wheel { width: 100%; max-width: 440px; margin-inline: auto; display: block; overflow: visible; }
+.wheel .wg { fill: none; stroke: var(--line-2); stroke-width: 1; }
+.wheel .we { fill: color-mix(in srgb, var(--gold) 16%, transparent); stroke: var(--gold); stroke-width: 2; stroke-linejoin: round; }
+.wheel .ws { fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.wheel .wp { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 5; stroke-linejoin: round; }
+.wheel .wd { fill: var(--surface); stroke: var(--accent); stroke-width: 2.5; }
+.wheel .wl { font-family: inherit; font-size: 12.5px; fill: var(--ink-2); font-weight: 500; }
+.bal-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: center; font-size: .82rem; color: var(--ink-2); margin-top: 6px; }
+.bal-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.bal-legend span::before { content: ''; width: 18px; height: 0; border-top: 3px solid var(--accent); border-radius: 2px; }
+.bal-legend .k-e::before { border-color: var(--gold); }
+.bal-legend .k-p::before { border-top: 2px dashed var(--muted); }
+.bal-rows { display: grid; gap: 14px; }
+.bal-row { display: grid; gap: 7px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.bal-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.bal-name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: .93rem; min-width: 0; }
+.bal-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bal-name em { font-style: normal; font-size: .78rem; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.bal-name em.down { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.bal-rate { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 3px; direction: ltr; }
+.bal-rate button { height: 36px; border: 1px solid var(--line-2); background: var(--surface); border-radius: 8px; font: inherit; font-size: .84rem; color: var(--ink-2); padding: 0; cursor: pointer; transition: background .12s, border-color .12s; }
+.bal-rate button:hover { border-color: var(--accent); }
+.bal-rate button.in { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.bal-rate button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+.bal-eff { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.bal-eff .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--gold) 16%, transparent); overflow: hidden; }
+.bal-eff .bar i { display: block; height: 100%; background: var(--gold); border-radius: 3px; }
+.bal-eff small { color: var(--muted); font-size: .78rem; min-width: 4.6rem; text-align: end; }
+.bal-step { margin-top: 14px; display: grid; gap: 12px; }
+.bal-step label { display: grid; gap: 8px; font-size: .92rem; color: var(--ink-2); }
+.bal-step .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.bal-ins { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.bal-ins li { display: flex; align-items: flex-start; gap: 11px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.bal-ins li > .ic { width: 18px; height: 18px; color: var(--accent); margin-top: 3px; flex: none; }
+.bal-ins li.warn { display: flex; margin: 0; background: var(--gold-soft); border-color: color-mix(in srgb, var(--gold) 30%, transparent); font-size: inherit; }
+.bal-ins li.warn > .ic { color: var(--gold); }
+.bal-ins p { flex: 1 1 14rem; margin: 0; font-size: .92rem; line-height: 1.75; color: var(--ink); }
+.bal-ins .chip-b { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.bal-ins .chip-b .ic { width: 13px; height: 13px; }
+.bal-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.bal-table th, .bal-table td { padding: 8px 6px; text-align: start; border-bottom: 1px solid var(--line); }
+.bal-table tr:last-child td { border-bottom: 0; }
+.bal-table td a { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); text-decoration: none; font-weight: 500; }
+.bal-table td a:hover { color: var(--accent); }
+.bal-nudge > span { flex: 1; line-height: 1.8; }
+.bal-nudge .link { font-size: inherit; }
+.lbl a.cnt { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.three.minday .slot:not(.first) { opacity: .45; }
+.stuck .stuck-list { display: grid; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.stuck .stuck-text { font-size: .98rem; line-height: 1.9; color: var(--ink-2); margin: 0; }
+.stuck .wk-f { display: grid; gap: 7px; font-size: .9rem; color: var(--ink-2); }
+.stuck-link { color: var(--muted); font-size: .86rem; margin-inline-start: 12px; }
+button.today-hero-secondary { font: inherit; cursor: pointer; }
+@media (max-width: 520px) {
+  .bal-rate button { height: 38px; font-size: .8rem; border-radius: 7px; }
+  .bal-table th:nth-child(4), .bal-table td:nth-child(4) { display: none; }
+  .wheel .wl { font-size: 13.5px; }
+}
+a.prow { text-decoration: none; color: inherit; }

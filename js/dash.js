@@ -121,6 +121,7 @@ export function vDash(h) {
     <section class="panel"><p class="lbl">توازن المجالات <span class="cnt">منجز ١٤ يومًا، ثم المفتوح</span></p>
       ${bal.length ? `<div class="bars">${bal.map((r) => `<div class="bl" style="--c:${esc(r.a.color)}" title="${esc(r.a.name)}: ${n(r.done)} منجزة، ${n(r.open)} مفتوحة"><span>${areaMark(r.a, 'xs')}${esc(r.a.name)}</span><div class="bar"><i style="width:${(r.done / bmax) * 100}%"></i></div><b>${n(r.done)}<small>/${n(r.open)}</small></b></div>`).join('')}</div>`
     : '<p class="note">لا نشاط في المجالات بعد.</p>'}
+      <p class="note"><a href="#/balance">رضاك مقابل جهدك في كل مجال: عجلة الاتزان</a></p>
       ${inbox ? `<p class="note">${n(inbox)} في الوارد بلا مجال. <a href="#/list/inbox">صنّفها</a></p>` : ''}
     </section>
     <section class="panel"><p class="lbl">${I('people', 'd')}الإسناد والمتابعة</p>

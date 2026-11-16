@@ -16,6 +16,7 @@ import { vPyramid } from './pyramid.js';
 import { notify } from './notify.js';
 import { pushConfig } from './config.js';
 import { vDash } from './dash.js';
+import { vBalance, balanceAlert, wheelDue, isMinDay } from './balance.js';
 import { wk, isWork, FREQ_AR, aiOn } from './work.js';
 
 export const ui = {
@@ -160,6 +161,7 @@ function vToday() {
   }).join('');
 
   const sug = full ? [] : suggestions(5);
+  const sug0 = sug;
   const also = alsoToday();
   const done = doneToday().filter((t) => !isFocus(t));
   const allWon = full && doneN === MAX_FOCUS;
@@ -170,6 +172,14 @@ function vToday() {
     : '';
   const score = `<div class="dayscore">${rings(focus)}<div><b>${n(doneN)} من ${n(MAX_FOCUS)}</b><span>${st ? `${I('fire', 'f', 'flame')}${daysWord(st)} متتالية` : 'ابدأ سلسلتك اليوم'}</span></div></div>`;
 
+  // الاتزان: لافتة واحدة على الأكثر حتى لا تزدحم الشاشة
+  const minDay = isMinDay();
+  const bal = minDay ? null : balanceAlert();
+  const nudge = minDay
+    ? `<p class="warn bal-nudge">${I('moon', 'd')}<span><b>يوم الحد الأدنى.</b> أنجز أولويتك الأولى وهذا يكفي ويحفظ سلسلتك. <button class="link" data-act="min-day">عودة ليوم عادي</button></span></p>`
+    : bal ? `<p class="warn bal-nudge">${I('scales', 'd')}<span><b>${esc(bal.title)}.</b> ${esc(bal.sub)} <button class="link" data-act="bal-add" data-id="${bal.areaId}">أضف خطوة صغيرة</button> · <a href="#/balance">الاتزان</a></span></p>`
+      : wheelDue() ? `<p class="warn bal-nudge">${I('scales', 'd')}<span>نهاية الأسبوع: دقيقة واحدة لتقييم <a href="#/balance">عجلة الاتزان</a>.</span></p>` : '';
+  const stuckT = focus.find(isOpen) || sug0[0] || null;
   const remaining = Math.max(0, MAX_FOCUS - doneN);
   const nextHint = !focus.length ? 'اختر أولوياتك الثلاث وابدأ بخطوة واحدة.'
     : remaining === 0 ? 'ممتاز! أنجزت أولوياتك، خذ لحظة لتقدّر تقدمك.'
@@ -184,6 +194,7 @@ function vToday() {
         <div class="today-hero-actions">
           <button type="button" data-act="capture" class="today-hero-primary">${I('plus', 'd')} إضافة مهمة جديدة</button>
           <a href="#/dashboard" class="today-hero-secondary">${I('chart', 'd')} شاهد تقدمك</a>
+          ${stuckT ? `<button type="button" class="today-hero-secondary" data-act="stuck" data-id="${stuckT.id}">${I('hand', 'i')} عالق؟</button>` : ''}
         </div>
       </div>
       <div class="today-hero-progress" aria-label="أُنجزت ${n(doneN)} من ${n(MAX_FOCUS)} أولويات">
@@ -191,13 +202,14 @@ function vToday() {
         <div class="today-progress-caption">${st ? `${I('fire', 'f', 'flame')}${daysWord(st)} متتالية` : 'ابدأ سلسلتك اليوم'}</div>
       </div>
     </section>
-    ${load.over ? `<p class="warn">${I('scales', 'd')}يومك أثقل من طاقتك بـ${fmtMin(load.minutes - load.cap)}. نقل مهمة إلى الغد أو إسنادها قد يساعدك.</p>` : ''}
+    ${nudge}
+    ${load.over && !minDay ? `<p class="warn">${I('scales', 'd')}يومك أثقل من طاقتك بـ${fmtMin(load.minutes - load.cap)}. نقل مهمة إلى الغد أو إسنادها قد يساعدك.</p>` : ''}
     <section class="today-priorities" aria-labelledby="priorities-title">
       <div class="today-section-head">
         <div class="today-section-title"><span class="today-section-mark">${I('bolt', 'i')}</span><div><h2 id="priorities-title">أولويات اليوم</h2><p>ثلاث خطوات أساسية تستحق تركيزك</p></div></div>
         <span class="today-section-count">${n(focus.length)} / ${n(MAX_FOCUS)}</span>
       </div>
-      <ol class="three${allWon ? ' allwon' : ''}">${slots}</ol>
+      <ol class="three${allWon ? ' allwon' : ''}${minDay ? ' minday' : ''}">${slots}</ol>
       ${loadLine}
       ${allWon ? `<p class="won-msg">${I('sparkle', 'd')}أنجزت الثلاث. ما يأتي بعدها مكسب إضافي، لا التزام.</p>` : ''}
       ${quickAdd({ ctx: 'today' }, full ? 'أضف مهمة إلى اليوم' : 'أضف مهمة أو أولوية جديدة')}
@@ -209,7 +221,7 @@ function vToday() {
     <nav class="today-shortcuts" aria-label="انتقال سريع">
       <a href="#/list/planned">${I('cal', 'd')} <span>المهام القادمة</span>${I('back', 'i')}</a>
       <a href="#/goals">${I('flag', 'd')} <span>أهدافي</span>${I('back', 'i')}</a>
-      <a href="#/matrix">${I('grid', 'd')} <span>مصفوفة الأولويات</span>${I('back', 'i')}</a>
+      <a href="#/balance">${I('scales', 'd')} <span>الاتزان</span>${I('back', 'i')}</a>
     </nav>
   </div>`;
 }
@@ -303,7 +315,7 @@ function vReview() {
   const dmax = Math.max(1, ...days.map((d) => d.c));
   const amax = Math.max(1, ...areas().map((a) => done.filter((t) => t.areaId === a.id).length));
   const rev = S().reviews.find((r) => r.id === wk) || {};
-  const past = S().reviews.filter((r) => isReviewDoc(r) && r.id !== wk).sort((a, b) => b.id.localeCompare(a.id));
+  const past = S().reviews.filter((r) => isReviewDoc(r) && r.id !== wk && (r.wins || r.blockers || r.next)).sort((a, b) => b.id.localeCompare(a.id));
   const isCur = ui.weekOffset === 0;
   const val = (k) => esc(ui.drafts[`rv-${wk}-${k}`] ?? rev[k] ?? '');
 
@@ -324,7 +336,7 @@ function vReview() {
   <div class="two-col">
     <section class="panel"><p class="lbl">الإنجاز يومًا بيوم</p>
       <div class="week">${days.map((d) => `<div class="wd${d.k === todayKey() ? ' now' : ''}"><i style="height:${Math.round((d.c / dmax) * 100)}%"></i><b>${d.c ? n(d.c) : ''}</b><span>${d.lbl}</span></div>`).join('')}</div></section>
-    <section class="panel"><p class="lbl">توازن المجالات</p>
+    <section class="panel"><p class="lbl">توازن المجالات <a class="cnt" href="#/balance">عجلة الاتزان</a></p>
       <div class="bars">${areas().map((a) => { const c = done.filter((t) => t.areaId === a.id).length; return `<div class="bl" style="--c:${esc(a.color)}"><span>${areaMark(a, 'xs')}${esc(a.name)}</span><div class="bar"><i style="width:${(c / amax) * 100}%"></i></div><b>${n(c)}</b></div>`; }).join('') || '<p class="note">لا مجالات.</p>'}</div></section>
   </div>
   ${isCur && todo.length ? `<section class="blk"><p class="lbl">رتّب قبل أن تبدأ أسبوعك</p><ul class="todo">${todo.join('')}</ul></section>` : ''}
@@ -355,7 +367,7 @@ export function navItems() {
     ].join(''),
     smart: Object.entries(SMART).map(([k, s]) => item(`#/list/${k}`, I(s.icon, 'd'), s.name, c[k], `k-${k}`)).join(''),
     views: [
-      item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'هرم الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
+      item('#/balance', I('scales', 'd'), 'الاتزان', 0), item('#/matrix', I('grid', 'd'), 'المصفوفة', 0), item('#/goals', I('flag', 'd'), 'هرم الأهداف', S().goals.filter((g) => g.status === 'active').length), item('#/review', I('note', 'd'), 'المراجعة', 0),
     ].join(''),
     lists: areas().map((a) => {
       const late = c[`late:${a.id}`] || 0;
@@ -528,7 +540,7 @@ function vWidget() {
 
 export const ROUTES = {
   today: vToday, list: vList, area: vList, matrix: vMatrix, goals: () => vPyramid({ I, vh, ui }), review: vReview,
-  dashboard: () => vDash({ I, areaMark, row, vh }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
+  dashboard: () => vDash({ I, areaMark, row, vh }), balance: () => vBalance({ I, areaMark, vh, ui }), all: () => vAll({ I, row, vh, ui }), minutes: vMinutes, lists: vLists, search: vSearch, settings: vSettings, widget: vWidget,
 };
 
 /* ═════════════ لوحة التفاصيل ═════════════ */
@@ -641,6 +653,7 @@ export function pane(t) {
     ${!done && !meet ? `<div class="pomo">
       <div class="pomo-i"><span class="pomo-dots" aria-hidden="true">${dots || '<i></i>'}</span><span class="pomo-t">${pomoTxt}</span></div>
       <button class="btn primary pomo-go" data-act="pomo-start" data-id="${t.id}">${I('play', 'f')}ابدأ تركيز ٢٥ د</button>
+      <button class="link stuck-link" data-act="stuck" data-id="${t.id}">عالق؟</button>
     </div>` : ''}
 
     <div class="pblk">
@@ -710,6 +723,7 @@ export function commitSheet(t) {
       <button class="chip-b" data-act="commit-snooze" data-id="${t.id}" data-v="tomorrow">غدًا</button>
     </div>
     ${(t.snoozes || 0) >= 1 ? `<p class="note">${I('fire', 'f', 'flame')}أجّلتها ${n(t.snoozes)} ${t.snoozes === 1 ? 'مرة' : 'مرات'}. التأجيل الثالث يعني أنها تحتاج تقسيمًا أو إسنادًا.</p>` : ''}
+    <button class="link" data-act="stuck" data-id="${t.id}">عالق؟ لا أستطيع البدء</button>
     <button class="link" data-act="commit-done" data-id="${t.id}">أنجزتها بالفعل</button>
   </div>`;
 }

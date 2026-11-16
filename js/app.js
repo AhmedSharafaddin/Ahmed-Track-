@@ -11,6 +11,7 @@ import {
 } from './model.js';
 import { ui, env, ROUTES, pane, focusView, navItems, quickAdd, fmtClock, I, commitSheet } from './views.js';
 import { notify } from './notify.js';
+import { rate, setEnergy, toggleMinDay, isMinDay, logStuck, stuckSheet, STUCK } from './balance.js';
 import { isWork, hydrate, onWork, uploadPhoto, postComment, aiSteps, syncSoon } from './work.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -65,7 +66,7 @@ function paint() {
   if (here !== last.route) {
     last.route = here;
     document.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));
-    const tabFor = { today: 'today', matrix: 'matrix', goals: 'goals', dashboard: 'dashboard', review: 'dashboard' }[ui.route] || 'lists';
+    const tabFor = { today: 'today', matrix: 'matrix', goals: 'goals', dashboard: 'dashboard', review: 'dashboard', balance: 'dashboard' }[ui.route] || 'lists';
     document.querySelectorAll('.tabbar a').forEach((a) => a.setAttribute('aria-current', a.dataset.route === tabFor ? 'page' : 'false'));
   } else {
     navEl.querySelectorAll('[data-nav]').forEach((a) => a.setAttribute('aria-current', a.dataset.nav === here ? 'page' : 'false'));
@@ -261,12 +262,12 @@ function logFocus() {
 }
 
 const POMO = 25 * 60;
-function startFocus(id, auto = false) {
+function startFocus(id, auto = false, secs = 0) {
   if (ui.focusId && ui.focusId !== id) logFocus();
   ui.focusId = id;
-  const total = auto ? POMO : (ui.timer.mode === 'break' ? POMO : ui.timer.total);
+  const total = secs || (auto ? POMO : (ui.timer.mode === 'break' ? POMO : ui.timer.total));
   ui.timer = { total, left: total, running: false, endAt: 0, mode: 'work' };
-  if (auto) runTimer();
+  if (auto || secs) runTimer();
   render();
 }
 function runTimer() {
@@ -458,6 +459,26 @@ document.addEventListener('click', (e) => {
     }
     case 'start-focus': startFocus(id); break;
     case 'pomo-start': startFocus(id, true); break;
+    /* ── الاتزان ── */
+    case 'bal-rate': rate(el.dataset.id, el.dataset.v); break;
+    case 'bal-energy': setEnergy(el.dataset.v); break;
+    case 'bal-add': { const a = areaById(el.dataset.id); if (a) openCapture({ area: a.id }, `خطوة صغيرة في «${a.name}»`); break; }
+    case 'min-day': {
+      if (el.dataset.on && isMinDay()) { dlg.close(); toast('اليوم «حدّ أدنى» بالفعل.'); break; }
+      const on = toggleMinDay();
+      if (dlg.open) dlg.close();
+      toast(on ? 'يوم الحد الأدنى: أولوية واحدة تكفي اليوم وتحفظ سلسلتك.' : 'عدت ليوم عادي.');
+      break;
+    }
+    case 'stuck': case 'stuck-pick': {
+      const t = taskById(el.dataset.id);
+      if (!t || !isOpen(t)) break;
+      dlg.classList.add('commit-dlg');
+      dlg.innerHTML = stuckSheet(t, I, act === 'stuck-pick' ? el.dataset.f : null);
+      if (!dlg.open) dlg.showModal();
+      setTimeout(() => $('input[name=step]', dlg)?.focus(), 30);
+      break;
+    }
     case 'pane-more': ui.paneMore = !ui.paneMore; forcePane = true; render(); break;
     case 'fx-skip': { const T = ui.timer; clearInterval(fxTick); T.running = false; T.mode = 'work'; T.total = POMO; T.left = POMO; T.runFrom = 0; document.title = 'مركز القيادة'; render(); break; }
     case 'edit-values': openValuesDialog(); break;
@@ -704,6 +725,29 @@ document.addEventListener('submit', (e) => {
       saveValues(ids.map((id, i) => ({ id: SAFE_ID.test(id) ? id : uid(), text: tx[i], emoji: em[i] })));
       dlg.close();
       toast('حُفظت قيمك.');
+      break;
+    }
+    case 'bal-step': {
+      const title = get('title');
+      const area = areaById(form.dataset.area);
+      if (!title) return toast('اكتب الخطوة أولًا.');
+      if (!area) return;
+      const tomorrow = e.submitter?.value === 'tomorrow';
+      createTask({ title, areaId: area.id, due: tomorrow ? keyAdd(todayKey(), 1) : todayKey(), est: 15 });
+      delete ui.drafts['bal-step'];
+      toast(`أُضيفت إلى «${area.name}» ${tomorrow ? 'لغدٍ' : 'لليوم'}.`);
+      break;
+    }
+    case 'stuck': {
+      const t = taskById(form.dataset.id);
+      const f = STUCK[form.dataset.f];
+      if (!t || !f) break;
+      const step = get('step') || f.step || '';
+      if (step && !(t.steps || []).some((s) => s.title === step)) updateTask(t.id, { steps: [{ id: uid(), title: step, done: false }, ...(t.steps || [])] });
+      logStuck(form.dataset.f, t.areaId);
+      dlg.close();
+      startFocus(t.id, false, f.min * 60);
+      if (form.dataset.f === 'scatter') setTimeout(() => $('#fx-catch')?.focus(), 80);
       break;
     }
     case 'review': {
